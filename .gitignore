@@ -1,0 +1,44 @@
+# Local workspace/session metadata and verification output
+.mindfs/
+.runtime/
+.verification/
+__pycache__/
+
+# Runtime configuration and credentials: never publish actual deployment data
+.env
+.env.*
+!.env.example
+config.yaml
+config.yml
+auths/
+auth-dir/
+.cli-proxy-api/
+credentials/
+secrets/
+*credentials*.json
+*token*.json
+*.pem
+*.key
+id_rsa
+id_ed25519
+
+# Backups, logs, and live databases
+backup/
+backups/
+snapshots/
+logs/
+*.log
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Editor/OS temporary files
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp
