@@ -18,11 +18,11 @@ printf '{"fixture":true}\n' > "$TMP/data/sample.json"
 # Isolated test projects use random high ports, not either live service port.
 PORT=$(( 32000 + RANDOM % 8000 )); SSH_PORT=$(( 41000 + RANDOM % 8000 ))
 COMPOSE=(docker compose --env-file "$TMP/deployment/.env" -p "$NAME")
-COMPOSE_PROJECT_NAME="$NAME" bash "$ROOT/start.sh" --data-dir "$TMP/data" --output "$TMP/deployment" --port "$PORT" --ssh-port "$SSH_PORT" > "$TMP/start-output"
+COMPOSE_PROJECT_NAME="$NAME" bash "$ROOT/start.sh" --role backup --deployment docker --data-dir "$TMP/data" --source sample:file:sample.json --output "$TMP/deployment" --port "$PORT" --ssh-port "$SSH_PORT" > "$TMP/start-output"
 "${COMPOSE[@]}" config --quiet
 identity_before=$(sha256sum "$TMP/deployment/.env" "$TMP/deployment/state-native/admin.token" "$TMP/deployment/state-native/ssh/id_ed25519")
 node_before=$(jq -r .node_id "$TMP/deployment/state-native/config.json")
-COMPOSE_PROJECT_NAME="$NAME" bash "$ROOT/start.sh" --data-dir "$TMP/data" --output "$TMP/deployment" --port "$PORT" --ssh-port "$SSH_PORT" > "$TMP/repeat-output"
+COMPOSE_PROJECT_NAME="$NAME" bash "$ROOT/start.sh" --role backup --deployment docker --data-dir "$TMP/data" --source sample:file:sample.json --output "$TMP/deployment" --port "$PORT" --ssh-port "$SSH_PORT" > "$TMP/repeat-output"
 [[ $(sha256sum "$TMP/deployment/.env" "$TMP/deployment/state-native/admin.token" "$TMP/deployment/state-native/ssh/id_ed25519") == "$identity_before" ]]
 [[ $(jq -r .node_id "$TMP/deployment/state-native/config.json") == "$node_before" ]]
 grep -q "http://127.0.0.1:$PORT" "$TMP/start-output"
@@ -33,7 +33,8 @@ for _ in {1..120}; do
 done
 TOKEN=$(< "$TMP/deployment/state-native/admin.token")
 BASE="http://127.0.0.1:$PORT"
-curl -fsS --max-time 10 -H "Authorization: Bearer $TOKEN" -H "Origin: $BASE" "$BASE/api/status" | jq -e '.phase=="unconfigured"' >/dev/null
+curl -fsS --max-time 10 -H "Authorization: Bearer $TOKEN" -H "Origin: $BASE" "$BASE/api/status" | jq -e '.phase=="backup_standby" and .node_role=="backup" and .enabled==false' >/dev/null
+curl -fsS --max-time 10 -H "Authorization: Bearer $TOKEN" -H "Origin: $BASE" "$BASE/api/config" | jq -e '.sources==[{name:"sample",kind:"file",path:"/data/sample.json"}]' >/dev/null
 KEY=$(cat "$TMP/deployment/state-native/ssh/id_ed25519.pub")
 curl -fsS --max-time 10 -H "Authorization: Bearer $TOKEN" -H "Origin: $BASE" -H 'Content-Type: application/json' \
   --data "$(jq -n --arg key "$KEY" '{public_key:$key}')" "$BASE/api/pairing" | jq -e '.trusted==true' >/dev/null
@@ -48,4 +49,11 @@ done
 [[ $(docker inspect --format '{{.State.Health.Status}}' "$ID") == healthy ]]
 [[ $(stat -c %a "$TMP/deployment/.env") == 600 ]]
 [[ -f $TMP/deployment/state-native/config.json && -f $TMP/deployment/state-native/ssh/ssh_host_ed25519_key ]]
-printf 'PASS: one-command install and identical rerun preserve credentials/node ID; hardened Compose, real CGI authentication, same-origin writes, cross-origin rejection and healthcheck\n'
+COMPOSE_PROJECT_NAME="$NAME" bash "$ROOT/start.sh" uninstall --output "$TMP/deployment" --yes > "$TMP/uninstall-output"
+[[ -f $TMP/deployment/.env && -f $TMP/deployment/state-native/config.json && -f $TMP/data/sample.json ]]
+[[ -z $("${COMPOSE[@]}" ps -q) ]]
+COMPOSE_PROJECT_NAME="$NAME" bash "$ROOT/start.sh" --output "$TMP/deployment" > "$TMP/reinstall-output"
+[[ $(jq -r .node_id "$TMP/deployment/state-native/config.json") == "$node_before" ]]
+COMPOSE_PROJECT_NAME="$NAME" bash "$ROOT/start.sh" uninstall --purge --output "$TMP/deployment" --yes > "$TMP/purge-output"
+[[ ! -e $TMP/deployment/.env && ! -e $TMP/deployment/state-native && -f $TMP/data/sample.json ]]
+printf 'PASS: real Docker role/data bootstrap, health/authentication, private identity preservation, uninstall/reinstall and purge without deleting original data\n'

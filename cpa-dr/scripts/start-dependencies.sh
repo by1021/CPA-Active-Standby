@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 # Sourced by start.sh. Use only the host's configured package repositories.
 cpa_start_missing_dependencies() {
-  local tool help
+  local mode=${1:-docker} tool help
+  local -a required=(dirname realpath stat cat mkdir chmod flock jq sha256sum mktemp sync mv rm)
+  if [[ $mode != uninstall-* ]]; then required+=(touch openssl ssh-keygen); fi
+  case $mode in
+    docker|uninstall-docker) required+=(docker);;
+    native) required+=(od tr date find grep sed awk tar rsync sqlite3 curl nginx spawn-fcgi fcgiwrap sshd systemctl cp install getent);;
+    uninstall-native) required+=(systemctl);;
+    *) fail "未知依赖检查模式：$mode";;
+  esac
   CPA_START_MISSING=()
-  for tool in docker dirname realpath stat cat mkdir chmod touch openssl ssh-keygen flock jq; do
+  for tool in "${required[@]}"; do
     command -v "$tool" >/dev/null 2>&1 || CPA_START_MISSING+=("$tool")
   done
+  [[ $mode == docker || $mode == uninstall-docker ]] || return 0
   if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
     CPA_START_MISSING+=(docker-compose-v2)
-  elif ! help=$(docker compose up --help 2>/dev/null) ||
-       [[ ! $help =~ (^|[[:space:]])--wait([[:space:]]|$) || ! $help =~ (^|[[:space:]])--wait-timeout([[:space:]]|$) ]]; then
+  elif [[ $mode == docker ]] && { ! help=$(docker compose up --help 2>/dev/null) ||
+       [[ ! $help =~ (^|[[:space:]])--wait([[:space:]]|$) || ! $help =~ (^|[[:space:]])--wait-timeout([[:space:]]|$) ]]; }; then
     CPA_START_MISSING+=(docker-compose-v2)
   fi
 }
@@ -48,9 +57,9 @@ cpa_start_repository_package() {
 }
 
 cpa_start_ensure_dependencies() {
-  local install_deps=$1 assume_yes=$2 manager='' answer='' tool package dependencies cli_package
+  local install_deps=$1 assume_yes=$2 mode=${3:-docker} manager='' answer='' tool package dependencies cli_package
   local -a privilege=() packages=() candidates=()
-  cpa_start_missing_dependencies
+  cpa_start_missing_dependencies "$mode"
   ((${#CPA_START_MISSING[@]} > 0)) || return 0
   printf '检测到缺少依赖或需要升级：%s\n' "${CPA_START_MISSING[*]}" >&2
   ((install_deps == 1)) || fail '已禁用依赖安装；请先安装上述依赖后重跑'
@@ -76,9 +85,15 @@ cpa_start_ensure_dependencies() {
   fi
   for tool in "${CPA_START_MISSING[@]}"; do
     case $tool in
-      dirname|realpath|stat|cat|mkdir|chmod|touch) package=coreutils;;
-      openssl|jq) package=$tool;;
+      dirname|realpath|stat|cat|mkdir|chmod|touch|sha256sum|mktemp|sync|mv|rm|od|tr|date|cp|install) package=coreutils;;
+      openssl|jq|grep|sed|tar|rsync|curl|nginx|spawn-fcgi|fcgiwrap) package=$tool;;
       ssh-keygen) package=openssh-client; [[ $manager == apt-get ]] || package=openssh-clients;;
+      sshd) package=openssh-server;;
+      systemctl) package=systemd;;
+      find) package=findutils;;
+      awk) package=gawk;;
+      sqlite3) package=sqlite3; [[ $manager == apt-get ]] || package=sqlite;;
+      getent) package=libc-bin; [[ $manager == apt-get ]] || package=glibc-common;;
       flock) package=util-linux;;
       docker|docker-compose-v2)
         if [[ $tool == docker ]]; then
@@ -109,7 +124,7 @@ cpa_start_ensure_dependencies() {
     "${privilege[@]}" "$manager" install -y "${packages[@]}" || fail '依赖安装失败；请检查上方包管理器错误后重跑'
   fi
   hash -r
-  cpa_start_missing_dependencies
+  cpa_start_missing_dependencies "$mode"
   ((${#CPA_START_MISSING[@]} == 0)) || fail "安装后复检仍缺少依赖或 Compose 等待能力：${CPA_START_MISSING[*]}；请检查软件包版本和 PATH 后重跑"
   printf '依赖安装完成，复检通过，继续启动。\n' >&2
 }

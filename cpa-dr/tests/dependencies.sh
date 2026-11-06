@@ -5,10 +5,10 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf -- "$TMP"' EXIT
 HOST_PATH=$PATH
-required=(bash dirname realpath stat cat mkdir chmod touch openssl ssh-keygen flock jq)
+required=(bash dirname realpath stat cat mkdir chmod touch openssl ssh-keygen flock jq sha256sum mktemp sync mv rm)
 reset_fixture() {
   rm -rf -- "${TMP:?}/bin" "$TMP/out"
-  mkdir -p "$TMP/bin" "$TMP/out" "$TMP/tools"
+  mkdir -p "$TMP/bin" "$TMP/out" "$TMP/tools" "$TMP/data"
   : > "$TMP/packages.log"; : > "$TMP/docker.log"
   for tool in "${required[@]}"; do ln -s "$(PATH=$HOST_PATH command -v "$tool")" "$TMP/bin/$tool"; done
   export FIXTURE_BIN="$TMP/bin" FIXTURE_LOG="$TMP/packages.log" FIXTURE_DOCKER_LOG="$TMP/docker.log"
@@ -67,7 +67,7 @@ MOCK
   chmod +x "$TMP/bin/apt-get" "$TMP/bin/apt-cache" "$TMP/bin/docker" "$TMP/bin/sudo"
 }
 invoke() {
-  PATH="$TMP/bin" bash "$ROOT/start.sh" --output "$TMP/out" "$@" > "$TMP/stdout" 2> "$TMP/stderr"
+  PATH="$TMP/bin" bash "$ROOT/start.sh" --role primary --data-dir "$TMP/data" --deployment docker --output "$TMP/out" "$@" > "$TMP/stdout" 2> "$TMP/stderr"
 }
 expect_stop() {
   if invoke "$@" < /dev/null; then echo 'FAIL: fixture should stop before deployment' >&2; exit 1; fi
@@ -183,7 +183,7 @@ touch "$FIXTURE_BIN/compose-ready"
 MOCK
   chmod +x "$TMP/bin/$manager"
   expect_stop --yes
-  grep -qx "$manager install -y openssh-clients jq" "$FIXTURE_LOG"
+  grep -qx "$manager install -y jq openssh-clients" "$FIXTURE_LOG"
   grep -q 'fixture daemon reached' "$TMP/stderr"
   : > "$FIXTURE_LOG"
   rm "$TMP/bin/docker" "$TMP/bin/compose-ready"
@@ -211,15 +211,17 @@ printf 'PASS: coreutils bootstrap works without dirname and duplicate package ma
 if ((EUID == 0)) && command -v setpriv >/dev/null; then
   reset_fixture
   rm "$TMP/bin/jq" "$TMP/bin/sudo"
-  mkdir -p "$TMP/app/scripts"
+  mkdir -p "$TMP/app/scripts" "$TMP/app/lib"
   cp "$ROOT/start.sh" "$TMP/app/start.sh"
   cp "$ROOT/scripts/start-dependencies.sh" "$TMP/app/scripts/"
-  chmod 755 "$TMP" "$TMP/app" "$TMP/app/scripts"
+  cp "$ROOT/scripts/start-lifecycle.sh" "$TMP/app/scripts/"
+  cp "$ROOT/lib/common.sh" "$TMP/app/lib/"
+  chmod 755 "$TMP" "$TMP/app" "$TMP/app/scripts" "$TMP/app/lib"
   chmod 777 "$TMP/bin" "$TMP/out"
   chmod 666 "$FIXTURE_LOG" "$FIXTURE_DOCKER_LOG"
   user_start() {
     setpriv --reuid 65534 --regid 65534 --clear-groups env PATH="$TMP/bin" \
-      bash "$TMP/app/start.sh" --output "$TMP/out" --yes > "$TMP/stdout" 2> "$TMP/stderr"
+      bash "$TMP/app/start.sh" --role primary --data-dir "$TMP/data" --deployment docker --output "$TMP/out" --yes > "$TMP/stdout" 2> "$TMP/stderr"
   }
   if user_start < /dev/null; then echo 'FAIL: non-root fixture should stop' >&2; exit 1; fi
   grep -q sudo "$TMP/stderr"
@@ -253,7 +255,7 @@ fi
 # PTY exercises the default confirmation without changing host packages.
 reset_fixture
 rm "$TMP/bin/jq"
-pty_command="env PATH='$TMP/bin' bash '$ROOT/start.sh' --output '$TMP/out'"
+pty_command="env PATH='$TMP/bin' bash '$ROOT/start.sh' --role primary --data-dir '$TMP/data' --source data:directory:. --deployment docker --output '$TMP/out'"
 printf 'n\n' | script -q -e -c "$pty_command" /dev/null > "$TMP/pty" 2>&1 && exit 1
 [[ ! -s $FIXTURE_LOG && ! -e $TMP/out/.env ]]
 grep -q '\[y/N\]' "$TMP/pty"

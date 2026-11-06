@@ -103,3 +103,28 @@ PASS: config/role/SSH keys persist across container restart
 依赖安装、sudo 和 RPM 流程使用临时脚本模拟，不实际安装宿主软件包；真实发行版软件源、sudo 策略和缺少 Docker 时的安装结果待目标宿主验证。实际 Compose 测试只启动独立临时项目，不修改现有 CPA、Cloudflare 或备份配置。
 
 本轮独立只读复审记录见 [依赖安装复审](review-dependencies.md)。
+
+## 安装向导、两种部署与卸载清除（2026-11-06）
+
+现行需求与验收见 [安装向导与卸载设计](installer-workflow-design.md)。本次为安装模块功能扩展，未初始化 `.ai_state`；以下命令实际退出码0，不是正式 Athena 门禁或真实服务器部署凭证。
+
+| 检查 | 可复验命令（仓库根目录） | 结果 |
+|---|---|---|
+| 向导/安装/卸载回归 | `athena run -- bash cpa-dr/tests/start.sh` | PTY 角色→多项数据→确认→方式顺序；取消无部署/软件包副作用；目录/file/SQLite映射、备机缺失目标、冲突/重叠/链接；页面修改和身份保留；引导失败重跑；卸载确认/PURGE取消、停止失败、异常记录/所有权/链接保护及原始/未知数据保留 |
+| 依赖回归 | `athena run -- bash cpa-dr/tests/dependencies.sh` | 原有 apt/dnf/yum、Docker/Compose包候选和v1排除、缺失coreutils自举、确认/失败/sudo模拟通过；不实际安装宿主软件包 |
+| systemd模板 | `athena run -- bash cpa-dr/tests/deployment.sh` | 原生dry-run、自定义配置目录、服务/状态交集拒绝；只读数据同时约束tick/fcgi/ssh模板 |
+| 真 Docker 安装链路 | `athena run -- bash cpa-dr/tests/compose_smoke.sh` | 临时独立项目真实构建、管理健康、容器内角色/数据引导、CGI认证/同源/跨域检查、卸载→重装→清除；原始数据和身份保留 |
+| 非root真Docker客户端 | `athena run -- bash cpa-dr/tests/docker_user.sh` | 用setpriv仅改变测试进程UID/GID，独立HOME，未改账户或宿主配置；root私有CPA数据、容器root创建0600配置的读/合并、角色/仅来源参数重跑、已停止服务的只读CLI检查、sudo拒绝清除前保持服务运行、普通卸载/重装及root清除通过 |
+| 原生安装链路 | `athena run -- bash cpa-dr/tests/native_installer.sh` | 独立无宿主socket/无发布端口容器，真实安装器/状态CLI/Nginx/fcgiwrap/SSH/CGI及健康访问；本地向导分支不要求Docker；失败启动重试、逐单元就绪检查、普通用户sudo派发、页面/密钥持久化；模拟重启清空运行目录后执行生成单元的真实标记恢复命令，重跑及卸载后运行目录丢失的重装通过；同名单元摘要保护、旧uninstalled状态下仍停止实际单元、停止失败与卸载/重装/清除通过 |
+| 后端与页面回归 | `athena run -- bash -c 'bash cpa-dr/tests/core.sh && bash cpa-dr/tests/service.sh && bash cpa-dr/tests/api.sh && node --test cpa-dr/tests/browser/ui.test.cjs'` | 数据核心、主备/交接/保护状态、CGI及5项页面单测通过；未改备份、恢复或页面实现 |
+| 静态检查 | `athena run -- shellcheck --severity=warning -x cpa-dr/start.sh cpa-dr/scripts/*.sh cpa-dr/tests/*.sh` | ShellCheck warning级、逐文件`bash -n`、`git diff --check`通过 |
+
+新增入口参数的先红后绿记录：最初入口回归退出1，报「未知参数：--role」；实现及回归后退出0。自查修正了容器root创建的私有JSON对普通客户端不可读的问题：引导JSON在容器内读取/合并，显式重跑在容器内读取当前配置；普通客户端无需chown。清除root创建的备份先检查sudo再停止服务，拒绝提权不会先卸载服务。
+
+原生运行验证中的 **systemctl 是测试模拟器**，其余安装器、状态、Nginx、CGI、SSH与HTTP均真实运行；模板中的ReadOnlyPaths只做生成检查，未把模拟器当作真正的systemd沙箱/定时器。**真实宿主机 systemd 启动、只读挂载约束、sudo策略及实际发行版软件源仍待目标环境验证。** 没有安装/卸载宿主服务、改动现有CPA/Cloudflare或触碰真实数据。测试容器、网络和临时数据均已清理。
+
+### 接力复审与修复
+
+[首轮独立复审](review-installer-workflow-initial.md)发现1项P1：`/run` 在重启后清空，而原生单元未恢复目录所有权标记，导致重跑与卸载报错。新增原生回归先在未修实现上退出1，报 `runtime ownership marker not restored after simulated reboot`；修复让FastCGI/SSH的启动前命令从持久状态恢复权限0600的安装ID。补测卸载后运行目录丢失又发现 `nginx -t` 在systemd启动前需要PID父目录，重装入口仅在目录缺失且原有路径/所有权检查通过时重建。保持原有所有权和单元摘要保护。
+
+接力复跑入口、依赖、部署、静态检查、隔离Docker/非root/native链路及核心/服务/CGI/页面回归；最终普通独立复审原样结论见[安装向导复审](review-installer-workflow.md)。原生重启检查是模拟生命周期与真实文件命令组合，不是宿主重启或真实systemd启动凭证。

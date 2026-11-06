@@ -22,12 +22,29 @@ CPA 双机主备部署文档与可部署的主备容灾备份服务。
 
 ```bash
 cd cpa-dr
-bash start.sh --data-dir TARGET
+bash start.sh
 ```
 
-缺少宿主依赖时，脚本列出缺失项并询问 `[y/N]`，确认后安装、复检并继续；非 root 通过 sudo 安装。无人值守可加 `--yes`，只检查不安装可加 `--no-install-deps`；软件源、支持的包管理器和 Docker 权限说明见服务 README。
+首次直接运行 `bash start.sh`，依次选择 **主机/备机 → 数据父目录及多项备份内容 → 确认 → Linux 本地或 Docker 部署**。每项可选目录、普通文件或 SQLite；选择会写入服务配置，备份保持停用。也可用 `--data-dir TARGET` 预填父目录，其余选择仍由终端向导完成。
 
-服务使用 Bash、rsync、tar、jq、OpenSSH 和 sqlite3 原生命令，无 Python 后端。登录中文控制台，设置主／备角色、数据标签与路径、备份周期及对端 SSH 地址；交换公钥、核对主机指纹后启用定时任务。默认管理地址仅绑定 `127.0.0.1:8787`；远程管理和跨机连接见服务说明。旧脚本与本服务选择一种调度方式，不同时对同一数据执行接管或恢复。
+无人值守安装须明确提供角色、目录和方式；`TARGET` 替换为本机数据父目录，路径可相对该目录：
+
+```bash
+bash start.sh --role primary --data-dir TARGET --deployment docker \
+  --source auths:directory:auths --source shared_config:file:shared-config.yaml --yes
+# 备机改为 --role backup；Linux 本地改为 --deployment native。
+```
+
+缺少对应部署方式的依赖时，脚本询问 `[y/N]`，确认后安装并复检；Linux 本地不要求 Docker，非 root 通过 sudo 安装。`--yes` 确认安装，`--no-install-deps` 只检查；已有部署直接重跑，保留配置和密钥。自定义 `--output DIR` 后，重跑与卸载也要指定相同目录。
+
+```bash
+bash start.sh uninstall          # 卸载服务，保留备份、配置和密钥
+bash start.sh uninstall --purge  # 输入 PURGE 后清除本服务状态及安装文件
+```
+
+原始 CPA 数据与源码始终保留，不清理共用依赖或无关容器。无人值守卸载/清除须显式加 `--yes`；完整参数及清理范围见服务说明。
+
+服务使用 Bash、rsync、tar、jq、OpenSSH 和 sqlite3 原生命令，无 Python 后端。登录中文控制台，核对安装时选择的角色、数据标签与路径，设置周期及对端 SSH 地址；交换公钥、核对主机指纹后启用定时任务。默认管理地址仅绑定 `127.0.0.1:8787`；远程管理和跨机连接见服务说明。旧脚本与本服务选择一种调度方式，不同时对同一数据执行接管或恢复。
 
 ## 文档导航
 

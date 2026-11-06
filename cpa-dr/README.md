@@ -4,7 +4,7 @@
 
 | 能力 | 当前实现 |
 |---|---|
-| 主／备角色、备份内容与周期 | 页面配置，JSON 持久化；配置不作为 Shell 代码执行 |
+| 主／备角色、备份内容与周期 | 安装向导预设角色和数据，页面调整周期；JSON 持久化，不作为 Shell 代码执行 |
 | 主→备自动备份 | 定时采集、SHA256 校验、SSH 传输、完整验证后发布 |
 | 备机二次备份 | 按独立周期保存已收到的有效副本，分类保留历史 |
 | 历史恢复 | 校验、目标预览、明确确认、覆盖前回滚、反映新增／修改／删除 |
@@ -13,62 +13,109 @@
 
 **自动执行的是备份；接管、恢复、回切仍需管理员确认。不会修改现有 CPA、Cloudflare Worker、域名或 Tunnel。管理接口 `/healthz` 只说明管理服务存活，不代表 CPA 已准备好接收业务流量。** 快照是明文数据，建议磁盘加密、受限权限及独立离机备份。
 
-## 1. Docker 部署（主、备两台分别执行）
+## 1. 安装向导（主、备两台分别执行）
 
-宿主机需要 Docker、Compose，以及用于初始化/检查的 Bash、coreutils、OpenSSH 客户端、OpenSSL、util-linux（`flock`）和 jq。其他原生命令打包进镜像；不是假定所有 Linux 系统已经预装这些工具。
-
-`TARGET` 替换为已存在的 CPA **数据父目录**。它必须与服务源码、部署目录和状态目录独立。
+`TARGET` 替换为已存在的 CPA **数据父目录**，必须与服务源码、部署目录和状态目录独立。首次终端安装：
 
 ```bash
 cd cpa-dr
-bash start.sh --data-dir TARGET
+bash start.sh
 ```
 
-`start.sh` 检查宿主依赖；缺少时列出缺失项，提示「是否安装并继续启动？[y/N]」，输入 `y` 后安装并复检，再检查 Docker daemon、初始化和启动服务。安装使用现有软件源的 `apt-get`、`dnf` 或 `yum`；root 直接安装，普通用户只对软件包命令调用 `sudo`。依赖齐全时不操作软件包，拒绝确认或安装失败时退出，不生成配置或启动容器。
+| 顺序 | 输入 | 保存结果 |
+|---|---|---|
+| 1 | 本机为主机或备机 | `primary` / `backup` |
+| 2 | 数据父目录；逐项输入备份路径、标签、类型 | 支持目录、普通文件、SQLite，多项不重叠 |
+| 3 | 确认角色和数据 | 取消不安装依赖、不生成配置 |
+| 4 | `1` Linux 本地；`2` Docker | 安装所选方式的依赖及服务 |
 
-脚本复用初始化工具生成配置，构建/启动并等待管理服务健康（最多120秒），成功后显示实际管理地址、管理员令牌和本机 SSH 公钥。可从任意工作目录调用；**不修改现有 CPA，也不自动启用备份**。Docker/Compose 缺失或 Compose 等待能力不足时也会提示安装/升级；仅选择当前软件源中可用的包，不添加软件源、不下载执行远程安装器。Docker daemon 须已启动且当前用户有访问权限；脚本不额外调整服务或用户组。
+路径可相对数据父目录，回车选择整个父目录；标签只能使用字母、数字、下划线和短横线。**两端使用相同标签和类型，路径可以不同。** 备机恢复目标可以尚未存在，父目录仍须预先创建；主机来源必须存在。SQLite 应单独选择 SQLite 类型，不把在线数据库当作普通目录文件备份。
 
-兼容不同发行版的软件包命名：Compose 可来自 `docker-compose-v2`、`docker-compose-plugin` 或版本至少为 v2 的 `docker-compose`；旧版 v1 包不选用。若 `docker.io` 的包元数据将 `docker-cli` 列为独立推荐/依赖包，则同时显式安装 CLI，避免 `--no-install-recommends` 漏装。
+安装成功时角色和数据已保存，**新安装定时备份仍为停用**。登录页面核对，再配置周期、对端、公钥及主机指纹。脚本不启停现有 CPA、不修改 Cloudflare，也不自动配对或执行恢复。
 
-首次也可以直接执行 `bash start.sh`，按提示输入数据父目录；非交互运行必须提供 `--data-dir`。已有 `.env` 时直接重跑即可，保留配置、令牌、SSH 密钥和状态：
+### 无人值守与重跑
+
+首次非交互必须明确指定角色、父目录和方式。重复 `--source 标签:类型:路径` 选择多项；不指定时选择整个父目录，标签为 `data`：
 
 ```bash
+# 主机，Docker；只填写实际需要共享的数据
+bash start.sh --role primary --deployment docker --data-dir TARGET \
+  --source auths:directory:auths \
+  --source shared_config:file:shared-config.yaml \
+  --source usage:sqlite:usage.sqlite --yes
+# 备机，Linux 本地；备机路径可与主机不同
+bash start.sh --role backup --deployment native --data-dir TARGET \
+  --source auths:directory:auths --yes
+# 已有部署直接重跑；不重新选择或覆盖页面设置
 bash start.sh
-# 首次自定义端口和只读挂载（不是在已有配置上静默覆盖）
-bash start.sh --data-dir TARGET --port 8787 --ssh-port 2222 --read-only-data
-# 无人值守：明确允许安装缺失依赖，首次还需提供数据目录
-bash start.sh --yes --data-dir TARGET
-# 只检查依赖，不安装宿主软件包
-bash start.sh --no-install-deps
+# 独立配置目录：首次添加 --output DIR，之后也要指定
+bash start.sh --output DIR
 ```
 
-非交互运行缺少依赖时，必须显式传 `--yes` 才安装；它只确认依赖安装，不跳过数据、配置、权限或健康检查。`--yes` 和 `--no-install-deps` 互斥。apt 安装前刷新软件包索引；网络、软件源、sudo 权限或包版本问题会显示错误并非零退出。其他包管理器可预装 README 列出的依赖后运行。
+`--yes` 确认缺失依赖安装及卸载/清除，不代替角色、目录、部署方式参数，也不跳过路径/权限/健康检查。`--no-install-deps` 只检查、不安装；二者互斥。终端向导仍负责缺少的选择。冲突的角色、数据、方式或端口参数报错，不悄悄覆盖原配置。选择有历史恢复点的节点身份仍受原有角色保护约束。
 
-重复传入相同初始化参数可以重跑；与已有 `.env` 冲突的参数会报错。修改端口、监听地址或读写模式，应明确编辑 `.env` 后重跑。可用 `--output DIR` 将配置/状态保存在独立部署目录；后续也要带上相同 `--output DIR`，镜像仍从脚本旁源码构建。脚本不执行 `.env` 中的 Shell 代码，并忽略外部同名令牌、挂载和端口环境变量，以文件配置为准。
+可选 `--port 8787`、`--ssh-port 2222`、`--read-only-data`；本地还支持 `--install-root DIR`、`--state-dir DIR`、`--bind-host HOST`。默认监听 loopback。新安装记录写入配置目录的 `.env.docker.json` 或 `.env.native.json`，权限 `0600`；不要删除或交换记录和目录所有权标记。安装失败保留配置、密钥与状态，重跑可继续未完成的引导配置；成功部署重跑保留节点 ID、页面变更和定时开关。
 
-`.env`、私钥、管理员令牌初始化权限为 `0600`；状态默认使用新目录 `state-native/`。启动失败返回非零，保留配置和数据并提示查看日志；缺失挂载目录时拒绝自动创建空目录。登录信息包含秘密，不要上传终端输出。若只需初始化、不启动容器，仍可使用 `bash scripts/setup.sh --data-dir TARGET`，再手动执行 `docker compose up -d --build`。
+`--output DIR` 在 Docker 中保存 `.env` 和 `state-native`；在本地模式中保存 Nginx/SSH 配置和单元模板，默认 `/etc/cpa-dr-native`。本地服务/状态/配置目录使用无空格和特殊字符的绝对路径。检测到默认本地和 Docker 两份部署时，须明确指定 `--deployment` 或 `--output`。
 
-Compose v2 须支持 `docker compose up --wait --wait-timeout`；旧插件需先升级。健康通过仅表示管理服务存活，角色设置、双端配对和真实 CPA 业务验证仍按下文执行。
+### 依赖与权限
 
-打开 `http://127.0.0.1:8787`，使用初始化显示的管理员令牌登录。远程管理使用既有 SSH 本地转发：
+选择部署方式后才列出缺失项并询问「是否安装并继续启动？[y/N]」。确认后从现有 `apt-get`、`dnf` 或 `yum` 软件源安装并复检；不添加软件源、不下载执行远程安装器。root 直接安装，普通用户的软件包操作通过 sudo；**本地服务安装/卸载也通过 sudo**。
+
+- Docker 宿主需要 Bash、coreutils、OpenSSH 客户端、OpenSSL、util-linux 和 jq，以及 Engine 与支持 `up --wait --wait-timeout` 的 Compose v2。依赖齐全不操作软件包；Docker daemon 和访问权限仍须就绪，不自动调整 Docker 服务或用户组。
+- Compose 软件包兼容 `docker-compose-v2`、`docker-compose-plugin` 或 v2 的 `docker-compose`，不选 v1；`docker.io` 元数据声明独立 `docker-cli` 时同时安装 CLI。
+- Linux 本地只检查/安装原生服务命令，不要求 Docker；需要运行中的 systemd、Nginx、fcgiwrap、spawn-fcgi、OpenSSH、rsync、sqlite3、jq 等。服务模板及 `www-data` 组以 Debian/Ubuntu 为基准，其他发行版的包可从现有源安装，但具体路径、组和实际 systemd 启动须核对。
+- 非交互缺少依赖必须显式 `--yes` 才安装；拒绝、索引/安装/复检或 sudo 失败均返回非零。卸载只检查必要依赖，从不安装软件包。
+
+### Docker 配置与访问
+
+Docker 构建/启动后等待管理健康（最多120秒），通过容器内原有 CLI 应用引导配置，再显示实际管理地址、管理员令牌和 SSH 公钥；健康只证明管理服务存活。Docker 环境下选择的宿主路径自动转换为容器 `/data` 路径，不需要安装后重新输入。容器创建的 `0600` 配置由容器内读取；普通用户不必修改文件所有权。已卸载服务的显式参数核对使用不启动调度、不发布端口的只读 CLI 临时容器。
+
+已有 `.env` 是数据文件，脚本不执行其中 Shell 代码，并忽略外部同名令牌、挂载和端口变量。可明确编辑 `.env` 的监听地址、端口或读写模式后重跑；数据/状态根与安装记录须一致，不静默换挂载。自定义配置目录的新部署使用独立 Compose 项目名；已有安装保留项目名，重跑与卸载不受外部同名变量静默改写。
+
+`.env`、管理员令牌和私钥初始化权限 `0600`，登录输出含秘密，不要上传。若只初始化、不启动，仍支持 `bash scripts/setup.sh --data-dir TARGET`，再手动使用 Compose；该低层命令不运行角色/数据向导。
+
+打开 `http://127.0.0.1:8787` 登录。远程管理使用既有 SSH 转发：
 
 ```bash
 ssh -N -L 8787:127.0.0.1:8787 HOST
 ```
 
-在浏览器打开本机同一地址。管理端口与本服务 SSH 端口默认均只发布到 loopback：
-
 | `.env` 配置 | 默认值 | 用途 |
 |---|---|---|
 | `CPA_DATA_PATH` | 初始化时指定 | 宿主数据父目录 → 容器 `/data` |
-| `STATE_PATH` | `state-native` 的绝对路径 | 状态、密钥、历史及回滚 → 容器 `/state` |
+| `STATE_PATH` | `state-native` 的绝对路径 | 状态、密钥、历史及回滚 → `/state` |
 | `PORT` / `BIND_HOST` | `8787` / `127.0.0.1` | 中文管理页面 |
-| `SSH_PORT` / `SSH_BIND_HOST` | `2222` / `127.0.0.1` | 专用 SSH 备份传输，映射容器 `22` |
+| `SSH_PORT` / `SSH_BIND_HOST` | `2222` / `127.0.0.1` | 专用备份 SSH → 容器 `22` |
 | `DATA_ACCESS` | `rw` | 支持确认后的恢复；普通备份不改工作目录 |
 
-跨服务器配对时，将 `SSH_BIND_HOST` 改为本机内网 IP，来源防火墙只允许对端连接，执行 `docker compose up -d` 重新应用；不要把备份 SSH 地址配置成 CPA 业务入口。管理页面继续保持 loopback，或由既有 HTTPS 代理提供管理访问。
+跨机配对将 `SSH_BIND_HOST` 改为本机内网 IP，仅允许对端来源，重跑入口应用；不要把备份 SSH 配成 CPA 业务入口。管理页面保持 loopback 或使用既有 HTTPS 代理。只备份不恢复可首次加 `--read-only-data`；Docker 恢复前明确改 `.env` 的 `DATA_ACCESS=rw` 并重建容器。
 
-只备份不恢复可初始化时加 `--read-only-data`；恢复前将 `.env` 的 `DATA_ACCESS` 改为 `rw` 并重新创建容器。
+### 卸载与彻底清除
+
+两种部署通用，按配置目录的安装记录识别，不要求再次输入角色或数据：
+
+```bash
+# 交互确认；移除容器/本服务systemd单元，保留代码、配置、密钥和备份
+bash start.sh uninstall
+# 输入 PURGE 后，额外清除本服务备份、回滚、密钥及本地安装文件
+bash start.sh uninstall --purge
+# 独立配置目录，非交互明确确认
+bash start.sh uninstall --output DIR --yes
+bash start.sh uninstall --output DIR --purge --yes
+# 参数形式也支持
+bash start.sh --uninstall --deployment native
+```
+
+| 操作 | Docker | Linux 本地 |
+|---|---|---|
+| `uninstall` | 停止并移除本项目容器/网络；保留 `.env`、状态 | 停止写者、禁用并删除本服务单元；保留代码、配置、状态 |
+| `--purge` | 额外删除专用状态、`.env` 和安装记录 | 额外删除专用代码、状态、运行目录及本服务配置/记录 |
+| 始终保留 | 原始 CPA 数据、源码、未知配置、镜像/共用依赖和无关项目 | 原始 CPA 数据、源码、未知配置、共用软件包和其他服务 |
+
+普通卸载后直接重跑即可重启，保留原身份与页面配置；清除后的新安装生成新身份，需重新配对。清理检查规范路径、符号链接、目录所有权及单元摘要；发现异常或服务停止失败时，不继续删除。Docker 的普通卸载不需额外提权，`--purge` 清除容器 root 创建的私有目录时需要 root/sudo，并在停止服务前检查权限。不要先手动删除安装记录。清除不会全局 prune 或卸载共享的软件包。
+
+Linux 本地单元每次启动从持久状态恢复 `/run/cpa-dr-native` 的安装标记，避免系统重启清空运行目录后阻断重跑或卸载；配置、密钥与备份仍保存在持久目录中。
 
 ### 容器与数据权限
 
@@ -83,8 +130,8 @@ ssh -N -L 8787:127.0.0.1:8787 HOST
 
 ### 设置角色和数据标签
 
-1. 主端选择「主服务器」，备端选择「备服务器」。先保持「启用定时任务」关闭。
-2. 两端添加相同数据**标签**与类型，各自填写本机路径；路径可以不同。
+1. 核对安装向导保存的角色：主端「主服务器」，备端「备服务器」。低层手动部署则在页面选择。先保持「启用定时任务」关闭。
+2. 核对安装时保存的数据**标签**、类型和本机路径；两端标签/类型一致，路径可以不同。需要调整时在页面修改。
 3. 两端分别点击「显示本机 SSH 公钥」，将公钥复制到对端「导入对端 SSH 公钥」并确认导入。私钥保留本机，页面只配置私钥路径。
 4. 填对端 SSH 地址、端口、用户。Docker 跨机默认填写对端宿主地址及 `2222`；同一容器网络的测试环境可填容器名及 `22`。
 5. Docker 本机私钥路径为 `/state/ssh/id_ed25519`，known_hosts 路径为 `/state/ssh/known_hosts`；直接宿主机运行则填写实际状态目录里的路径。
@@ -142,6 +189,8 @@ rm -f /tmp/cpa-dr-hostscan
 主节点时钟应保持同步；同代次迟到的旧副本拒绝覆盖新副本。主时钟回拨或旧秒精度同秒无法判断顺序时会保护性拒收，应核对时钟和日志，不关闭防回退校验。
 
 ## 3. Linux 宿主机直接部署 / systemd
+
+通常在 `start.sh` 向导选择 `1`，或使用 `--deployment native`，自动完成依赖、角色/数据配置和安装。下面保留低层手动安装及 dry-run；手动方式不运行交互向导。
 
 Debian/Ubuntu 安装原生软件包：
 
@@ -218,6 +267,7 @@ bin/cpa-dr --state-dir ./state-native status
 
 ```bash
 bash tests/start.sh
+bash tests/dependencies.sh
 bash tests/core.sh
 bash tests/service.sh
 bash tests/api.sh
@@ -229,6 +279,10 @@ node --test tests/browser/ui.test.cjs
 docker build -t cpa-dr:native-verify .
 bash tests/runtime_pair.sh
 bash tests/compose_smoke.sh
+# 原生安装器/进程的隔离容器验证；systemctl 使用模拟器，不操作宿主机
+bash tests/native_installer.sh
+# 可选：root + setpriv + Docker；只改变测试进程UID，不改账户/宿主配置
+bash tests/docker_user.sh
 # 可选真实浏览器测试，需要预先安装 @playwright/test 和 Chromium。
 # NODE_PATH 指向开发测试依赖的 node_modules，不是运行时依赖。
 CPA_BROWSER=1 bash tests/runtime_pair.sh

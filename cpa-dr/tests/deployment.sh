@@ -32,6 +32,16 @@ for protocol in proxy uwsgi scgi; do
 done
 grep -q 'PasswordAuthentication no' "$TMP/units/sshd.conf"
 grep -q 'AuthorizedKeysFile /var/lib/cpa-dr-native/ssh/authorized_keys' "$TMP/units/sshd.conf"
+for unit in fcgi ssh; do
+  grep -Fxq 'ExecStartPre=/usr/bin/install -m 0600 /var/lib/cpa-dr-native/.cpa-dr-install-id /run/cpa-dr-native/.cpa-dr-install-id' "$TMP/units/cpa-dr-native-$unit.service"
+done
+printf '{"node_role":"backup","enabled":false,"sources":[]}\n' > "$TMP/bootstrap.json"
+bash "$ROOT/scripts/install-systemd.sh" --dry-run --read-only-data --config-file "$TMP/bootstrap.json" --config-dir /etc/cpa-dr-custom --data-dir "$TMP/data dir" --output "$TMP/ro-units" > /dev/null
+for unit in tick fcgi ssh; do grep -Fq "ReadOnlyPaths=\"$TMP/data dir\"" "$TMP/ro-units/cpa-dr-native-$unit.service"; done
+grep -q 'ReadWritePaths=/var/lib/cpa-dr-native$' "$TMP/ro-units/cpa-dr-native-tick.service"
+grep -q '/etc/cpa-dr-custom/nginx.conf' "$TMP/ro-units/cpa-dr-native-web.service"
+grep -q '/etc/cpa-dr-custom/sshd.conf' "$TMP/ro-units/cpa-dr-native-ssh.service"
+if bash "$ROOT/scripts/install-systemd.sh" --dry-run --state-dir /opt/shared --install-root /opt/shared --data-dir "$TMP/data dir" --output "$TMP/overlap-units" > /dev/null 2>&1; then echo 'native state/install overlap accepted' >&2; exit 1; fi
 if grep -Ei 'python|pip install' "$ROOT/Dockerfile" "$ROOT/compose.yaml" "$ROOT"/scripts/*.sh; then echo 'unexpected interpreter runtime' >&2; exit 1; fi
 grep -q 'rm -f /etc/ssh/ssh_host_' "$ROOT/Dockerfile"
 [[ $(grep -c 'StrictHostKeyChecking=no' "$ROOT/README.md" || true) == 0 ]]
