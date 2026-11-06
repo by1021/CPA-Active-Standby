@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 077
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+CPA_ROOT=$(cd -- "$(dirname -- "$script_path")/.." && pwd)
+CPA_STATE_DIR=${CPA_STATE_DIR:-/state}
+if [[ ${1:-} == --state-dir ]]; then CPA_STATE_DIR=${2:?}; shift 2; fi
+CPA_STATE_DIR=$(realpath -ms -- "$CPA_STATE_DIR")
+export CPA_ROOT CPA_STATE_DIR
+# shellcheck source=../lib/common.sh
+source "$CPA_ROOT/lib/common.sh"
+# shellcheck source=../lib/snapshots.sh
+source "$CPA_ROOT/lib/snapshots.sh"
+# shellcheck source=../lib/service.sh
+source "$CPA_ROOT/lib/service.sh"
+command=${1:-help}; shift || true
+if [[ $command == init ]]; then
+    if [[ ${1:-} == --allowed-root ]]; then export CPA_ALLOWED_ROOT; CPA_ALLOWED_ROOT=$(realpath -ms -- "${2:?}"); shift 2; fi
+    [[ $# == 0 ]] || { cpa_fail 'init 参数非法'; exit 1; }
+    mkdir -p -- "$CPA_STATE_DIR"
+    cpa_lock
+    cpa_service_init
+    jq -n --arg id "$(jq -r .node_id "$CPA_STATE_DIR/config.json")" --arg token "$(cat "$CPA_STATE_DIR/admin.token")" --arg key "$(cat "$CPA_STATE_DIR/ssh/id_ed25519.pub")" '{node_id:$id,admin_token:$token,public_key:$key}'
+    exit 0
+fi
+[[ -f $CPA_STATE_DIR/config.json && -f $CPA_STATE_DIR/runtime.json ]] || { cpa_fail '请先执行 init 初始化独立的原生备份状态目录'; exit 1; }
+case "$command" in
+    status) cpa_status ;;
+    pairing) cpa_pairing ;;
+    snapshots) cpa_snapshot_list | jq '{snapshots:.}' ;;
+    job) cpa_job_get "${1:?}" ;;
+    config) case ${1:-} in get) cpa_config_public ;; set) cpa_lock; cpa_save_config "${2:?}" ;; *) cpa_fail 'config get|set JSONFILE'; exit 1 ;; esac ;;
+    trust-key) cpa_lock; cpa_trust_key "${1:?}" ;;
+    action) cpa_lock; cpa_action "${1:?}" "${2:?}" ;;
+    tick) if cpa_lock 0; then cpa_tick; else exit 0; fi ;;
+    scheduler) trap 'exit 0' TERM INT; while true; do "$CPA_ROOT/bin/cpa-dr" --state-dir "$CPA_STATE_DIR" tick || true; sleep 1; done ;;
+    _run-job) [[ ${CPA_LOCK_HELD:-} == 1 ]] || { cpa_lock; }; cpa_worker "${1:?}" "${2:?}" "${3:?}" ;;
+    # Peer writes may queue behind a large secondary backup. Management stays
+    # at 5s and timer ticks at 0s; this remains within the SSH 300s total budget.
+    peer) if [[ ${1:-} == status ]]; then cpa_peer "$@"; else cpa_lock 60; cpa_peer "$@"; fi ;;
+    help) printf '%s\n' 'cpa-dr --state-dir DIR init --allowed-root ROOT' 'config get|set JSONFILE | status | pairing | trust-key PUBLIC_KEY_FILE | snapshots | action NAME JSONFILE | tick | scheduler' ;;
+    *) cpa_fail '命令不存在'; exit 1 ;;
+esac

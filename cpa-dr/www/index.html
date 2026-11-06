@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>CPA DR · 主备容灾控制台</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <section class="login-screen" id="login-screen">
+    <div class="login-art" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit-center">DR</div><div class="art-label">CONTINUITY, BY DESIGN.</div></div>
+    <div class="login-card">
+      <div class="brand"><span class="brand-mark">⇄</span><span>CPA <strong>DR</strong></span></div>
+      <p class="eyebrow">DISASTER RECOVERY CONSOLE</p>
+      <h1>让每一次切换<br>都有数据可依。</h1>
+      <p class="muted">登录本机控制台，配置主备节点、自动备份与受控恢复。</p>
+      <form id="login-form">
+        <label for="admin-token">管理员令牌</label>
+        <input id="admin-token" type="password" autocomplete="off" placeholder="输入安装时生成的 ADMIN_TOKEN" required>
+        <p class="field-help">令牌仅用于当前页面会话。请使用 HTTPS 或 SSH 本地转发访问。</p>
+        <p class="form-error" id="login-error" role="alert"></p>
+        <button class="button primary wide" type="submit" id="login-button">进入控制台 <span aria-hidden="true">→</span></button>
+      </form>
+      <p class="login-foot">独立备份服务 · 不修改现有 Cloudflare 入口</p>
+    </div>
+  </section>
+
+  <div class="app-shell" id="app-shell" hidden>
+    <aside class="sidebar">
+      <a href="#overview" class="brand light"><span class="brand-mark">⇄</span><span>CPA <strong>DR</strong></span></a>
+      <div class="sidebar-caption">CONTROL PLANE</div>
+      <nav aria-label="主导航">
+        <button class="nav-button active" data-panel="overview" type="button"><span aria-hidden="true">▦</span>运行概览</button>
+        <button class="nav-button" data-panel="config" type="button"><span aria-hidden="true">⚙</span>节点配置</button>
+        <button class="nav-button" data-panel="snapshots" type="button"><span aria-hidden="true">◷</span>备份历史</button>
+        <button class="nav-button" data-panel="recovery" type="button"><span aria-hidden="true">⇄</span>接管与回灌</button>
+      </nav>
+      <div class="sidebar-bottom"><div class="sidebar-node"><span class="status-dot" aria-hidden="true"></span><span id="sidebar-role">当前节点</span></div><p>单向同步 · 多版本备份<br>先回灌，再回切</p><button id="logout" class="logout" type="button">退出登录 ↗</button></div>
+    </aside>
+    <main class="workspace">
+      <header class="topbar"><div class="breadcrumb">CPA DR <span>/</span> <span id="page-breadcrumb">运行概览</span></div><div class="topbar-right"><span class="connection" id="connection">连接中</span><button id="refresh" class="button small" type="button">刷新</button></div></header>
+      <div id="global-message" class="notice" role="status" hidden></div>
+
+      <section id="panel-overview" class="panel">
+        <div class="page-heading"><div><p class="eyebrow">SYSTEM OVERVIEW</p><h1>主备容灾，一目了然。</h1><p class="muted">查看当前角色、备份新鲜度与传输状态。</p></div><button class="button primary" id="backup-now" type="button">＋ 立即备份</button></div>
+        <div class="metrics">
+          <article class="metric"><div class="metric-label">当前节点</div><div class="metric-value" id="metric-role">—</div><div class="metric-foot" id="metric-phase">等待配置</div></article>
+          <article class="metric"><div class="metric-label">自动备份</div><div class="metric-value" id="metric-enabled">—</div><div class="metric-foot" id="metric-interval">—</div></article>
+          <article class="metric"><div class="metric-label">最近备份</div><div class="metric-value compact" id="metric-last-backup">—</div><div class="metric-foot" id="metric-last-replication">尚无传输记录</div></article>
+          <article class="metric"><div class="metric-label">历史恢复点</div><div class="metric-value" id="metric-count">0</div><div class="metric-foot" id="metric-size">等待第一份有效快照</div></article>
+        </div>
+        <div class="overview-grid">
+          <article class="card topology-card"><div class="card-heading"><div><h2>数据流向</h2><p>只有当前权威节点可以产生运行数据备份。</p></div><span class="tag" id="topology-mode">未配置</span></div>
+            <div class="topology"><div class="node-box"><span class="node-icon" aria-hidden="true">▤</span><strong>主节点</strong><span id="primary-status">正常时提供服务</span></div><div class="flow-arrow"><span id="flow-label">单向同步</span><span class="arrow" aria-hidden="true">→</span></div><div class="node-box"><span class="node-icon" aria-hidden="true">▤</span><strong>备节点</strong><span id="backup-status">接收副本与历史快照</span></div></div>
+            <div class="inline-note">备节点接管后，停止旧主覆盖；主节点恢复先回灌，再回切。</div>
+          </article>
+          <article class="card"><div class="card-heading"><div><h2>任务状态</h2><p>备份、恢复与角色交接共用单任务锁。</p></div></div><div class="job-box"><span class="job-icon" aria-hidden="true">✓</span><div><strong id="job-title">当前无任务</strong><p id="job-detail">启用定时任务后自动运行。</p></div></div><p id="job-error" class="form-error" role="alert"></p><div class="key-values"><div><span>对端连接</span><strong id="peer-status">尚未配对</strong></div><div><span>角色代次</span><strong id="node-epoch">—</strong></div><div><span>本机 ID</span><code id="overview-node-id">—</code></div></div></article>
+        </div>
+        <article class="card onboarding" id="onboarding"><div><span class="step-circle">01</span><strong>配置本机</strong><p>选择主／备及备份内容</p></div><div><span class="step-circle">02</span><strong>双端配对</strong><p>交换 SSH 公钥并登记主机指纹</p></div><div><span class="step-circle">03</span><strong>启用备份</strong><p>按配置周期持续保护数据</p></div><button class="button" type="button" data-panel="config">开始配置 →</button></article>
+      </section>
+
+      <section id="panel-config" class="panel" hidden>
+        <div class="page-heading"><div><p class="eyebrow">NODE CONFIGURATION</p><h1>配置当前节点</h1><p class="muted">主备两端使用相同的数据标签，各自填写本机实际路径。</p></div></div>
+        <form id="config-form">
+          <article class="card"><div class="card-heading"><div><h2><span class="section-number">01</span> 节点与备份策略</h2><p>首次选择本机角色。已有数据后的角色变更受保护。</p></div><label class="switch-label"><input id="enabled" type="checkbox"><span>启用定时任务</span></label></div>
+            <div class="form-grid"><div class="field"><label for="node-role">当前服务器角色</label><select id="node-role"><option value="primary">主服务器 · Primary</option><option value="backup">备服务器 · Standby</option></select></div><div class="field"><label for="interval">主备同步间隔（秒）</label><input id="interval" type="number" min="1" max="604800" value="60" required></div><div class="field"><label for="secondary-interval">备机二次备份间隔（秒）</label><input id="secondary-interval" type="number" min="1" max="604800" value="3600" required></div><div class="field"><label for="retention">每类历史保留份数</label><input id="retention" type="number" min="1" max="100000" value="120" required></div><div class="field"><label for="max-bytes">单份快照容量上限（字节）</label><input id="max-bytes" type="number" min="1" value="1073741824" required></div><div class="field"><label for="config-node-id">本机唯一 ID</label><input id="config-node-id" readonly></div></div>
+          </article>
+          <article class="card"><div class="card-heading"><div><h2><span class="section-number">02</span> 备份内容与恢复目标</h2><p>标签对应两端同一份业务数据；绝对路径是本机路径，不是对端路径。</p></div><button id="add-source" class="button small" type="button">＋ 添加内容</button></div><div id="sources-list"></div><p id="sources-empty" class="empty-state compact-empty">尚未添加内容。主机启用备份前需添加至少一项。</p><div class="inline-note">Docker 默认可写挂载到 /data，普通备份不改工作数据。恢复前必须停止目标 CPA；可选只读备份模式。SQLite 请选「SQLite 一致性备份」，其他数据库先导出。</div></article>
+          <article class="card"><div class="card-heading"><div><h2><span class="section-number">03</span> SSH 主备配对</h2><p>两端互相导入 SSH 公钥；传输全程强制核对 known_hosts，不使用 HTTP 传输令牌。</p></div><button id="test-peer" class="button small" type="button">保存并测试配对</button></div>
+            <div class="form-grid">
+              <div class="field"><label for="peer-host">对端 SSH 地址</label><input id="peer-host" placeholder="HOST" autocomplete="off"></div>
+              <div class="field"><label for="peer-port">对端 SSH 端口</label><input id="peer-port" type="number" min="1" max="65535" value="22" required></div>
+              <div class="field"><label for="peer-user">对端 SSH 用户</label><input id="peer-user" placeholder="root" value="root" autocomplete="off"></div>
+              <div class="field"><label for="peer-node-id">对端节点 ID</label><input id="peer-node-id" placeholder="测试配对成功后自动记录"></div>
+              <div class="field"><label for="identity-file">本机 SSH 私钥路径</label><input id="identity-file" value="/state/ssh/id_ed25519" autocomplete="off"></div>
+              <div class="field"><label for="known-hosts-file">本机 known_hosts 路径</label><input id="known-hosts-file" value="/state/ssh/known_hosts" autocomplete="off"></div>
+            </div>
+            <div class="inline-note">这里填写路径，不上传私钥。known_hosts 必须先核对对端主机指纹，再在本机登记；首次 SSH 连接不会自动接受未知主机。Docker 容器互联填写容器名及 22，跨服务器填写实际宿主地址及发布端口。</div>
+            <div class="pairing-row"><div><strong>本机 SSH 公钥</strong><p>复制给对端，在对端页面导入。管理员登录令牌与 SSH 身份分离。</p></div><button id="reveal-pairing" class="button small" type="button">显示本机 SSH 公钥</button></div>
+            <div id="pairing-secret" hidden><label for="local-public-key">本机 Ed25519 公钥</label><div class="copy-field"><input id="local-public-key" readonly><button id="copy-public-key" class="button small" type="button">复制</button><button id="hide-public-key" class="button small" type="button">隐藏</button></div></div>
+            <div class="field"><label for="peer-public-key">导入对端 SSH 公钥</label><textarea id="peer-public-key" rows="3" placeholder="ssh-ed25519 公钥内容" autocomplete="off"></textarea></div><button id="trust-peer-key" class="button small" type="button">确认导入受限公钥</button>
+          </article>
+          <article class="card"><div class="card-heading"><div><h2><span class="section-number">04</span> CPA 启停方式</h2><p>仅用于确认后的恢复／交接。普通备份不停止主 CPA。</p></div></div><div class="form-grid"><div class="field"><label for="service-driver">管理方式</label><select id="service-driver"><option value="none">人工启停 · 默认</option><option value="docker">Docker 容器</option><option value="systemd">systemd 服务</option></select></div><div class="field"><label for="service-name">指定容器或服务名</label><input id="service-name" placeholder="TARGET"></div><div class="field"><label for="service-timeout">启停超时（秒）</label><input id="service-timeout" type="number" min="1" max="600" value="60" required></div></div><div class="inline-note">默认 Docker 部署不提供宿主机 Docker socket 或 systemd 权限。选择管理驱动前，需按部署文档配置执行环境；人工方式须真实停止 CPA 后再确认。</div></article>
+          <p id="config-error" class="form-error" role="alert"></p><div class="form-actions"><p>先保存并测试双端配对，再启用定时任务。</p><button id="save-config" class="button primary" type="submit">保存配置</button><button id="save-enable" class="button" type="button">保存、配对并启动</button></div>
+        </form>
+      </section>
+
+      <section id="panel-snapshots" class="panel" hidden>
+        <div class="page-heading"><div><p class="eyebrow">RECOVERY POINTS</p><h1>每一份副本，都可追溯。</h1><p class="muted">暂存归档校验成功后才发布。恢复前查看本机目标与覆盖范围。</p></div><button id="refresh-snapshots" class="button" type="button">刷新历史</button></div>
+        <article class="card table-card"><div class="card-heading"><div><h2>有效快照</h2><p id="snapshots-summary">读取中…</p></div></div><div class="table-scroll"><table><thead><tr><th>快照／创建时间</th><th>来源</th><th>用途</th><th>文件与大小</th><th>操作</th></tr></thead><tbody id="snapshots-body"></tbody></table></div><p class="empty-state" id="snapshots-empty" hidden>暂无有效快照。完成配对后启用备份，或点击「立即备份」。</p></article>
+      </section>
+
+      <section id="panel-recovery" class="panel" hidden>
+        <div class="page-heading"><div><p class="eyebrow">CONTROLLED HANDOVER</p><h1>先保护数据，再切换角色。</h1><p class="muted">故障接管和回切由管理员确认，定时备份自动执行。</p></div></div>
+        <div class="warning-banner"><strong>操作前检查实际 CPA 与流量入口</strong><p>本服务不修改 Cloudflare。现有 Worker 可能在主 CPA 恢复后立即回主；回灌完成前应隔离旧主 CPA 及业务入口。勾选确认不是自动网络分区仲裁。</p></div>
+        <div class="recovery-grid"><article class="card recovery-card"><span class="step-circle">01</span><h2>备机故障接管</h2><p>确认旧主已停止或隔离，以主机最新有效副本恢复备机，并将备机标记为权威节点。</p><ul><li>旧主不得继续写入或接受直连请求</li><li>备机已配置同标签恢复目标</li><li>接管后拒绝迟到的主机副本</li></ul><button id="promote" class="button primary" type="button">备机确认接管</button></article><article class="card recovery-card"><span class="step-circle">02</span><h2>主机进入待恢复</h2><p>主机恢复后先停止旧 CPA，保持备机服务，禁止旧主重新向备机推送数据。</p><ul><li>主机仍保持业务入口隔离</li><li>对端已经处于备机接管状态</li><li>不因机器重新在线而自动回切</li></ul><button id="prepare-recovery" class="button" type="button">主机准备恢复</button></article><article class="card recovery-card"><span class="step-circle">03</span><h2>最终回灌与回切</h2><p>安排交接窗口，停止全部备机写入，生成最终副本，恢复主机后完成角色交接。</p><ul><li>长连接排空，后台刷新也须停止</li><li>最终副本包括接管期间的新数据</li><li>失败保持保护状态，不盲目退回旧 token</li></ul><button id="failback" class="button" type="button">主机执行回灌</button></article></div>
+        <article class="card"><div class="card-heading"><div><h2>暂停角色与调度</h2><p>暂停新备份和自动发布，用于检查异常。此操作不宣称停止所有业务入口。</p></div><div class="table-actions"><button id="pause" class="button danger-outline" type="button">暂停并进入保护态</button><button id="resume" class="button" type="button">确认恢复调度</button></div></div></article>
+      </section>
+      <footer class="workspace-footer"><span>CPA DR · 主备数据管理</span><span>文件在线副本为尽力一致；历史快照不等同独立异地灾备。</span></footer>
+    </main>
+  </div>
+  <dialog id="action-dialog" class="action-dialog"><form id="dialog-form"><div class="dialog-heading"><div><p class="eyebrow">CONFIRM OPERATION</p><h2 id="dialog-title">确认操作</h2></div><button id="dialog-close" class="icon-button" type="button" aria-label="关闭操作对话框">×</button></div><p id="dialog-description"></p><div id="dialog-snapshot-field"><label for="dialog-snapshot">选择有效快照</label><select id="dialog-snapshot"></select></div><div id="dialog-plan" class="plan-box" hidden><strong>恢复预览</strong><pre id="dialog-plan-text"></pre></div><div id="dialog-flags" class="dialog-flags"></div><label for="dialog-confirm">输入确认文字 <strong id="dialog-confirm-word"></strong></label><input id="dialog-confirm" autocomplete="off" required><p id="dialog-error" class="form-error" role="alert"></p><div class="dialog-actions"><button id="dialog-cancel" class="button" type="button">取消</button><button id="dialog-submit" class="button primary" type="submit">确认执行</button></div></form></dialog>
+</body>
+</html>

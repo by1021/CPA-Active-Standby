@@ -1,0 +1,10 @@
+# Runtime credentials, snapshots and test fixtures are never committed.
+/state/
+/state-native/
+/data/
+.env
+node_modules/
+playwright-report/
+test-results/
+.runtime/
+*.log

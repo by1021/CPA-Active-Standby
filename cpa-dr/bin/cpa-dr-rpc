@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+script_path=$(realpath -e -- "${BASH_SOURCE[0]}")
+ROOT=$(cd -- "$(dirname -- "$script_path")/.." && pwd)
+STATE=${CPA_STATE_DIR:-/state}
+if [[ ${1:-} == --state-dir ]]; then STATE=${2:?}; shift 2; fi
+[[ $# == 0 ]] || exit 1
+original=${SSH_ORIGINAL_COMMAND:-}
+[[ -n $original && ${#original} -le 512 && $original != *$'\n'* && $original != *$'\r'* ]] || { printf 'SSH RPC 请求非法\n' >&2; exit 1; }
+read -r -a words <<< "$original"
+for word in "${words[@]}"; do [[ $word =~ ^[A-Za-z0-9_-]+$ ]] || { printf 'SSH RPC 参数非法\n' >&2; exit 1; }; done
+case ${words[0]} in
+    status) [[ ${#words[@]} == 1 ]] ;;
+    receive) [[ ${#words[@]} == 3 && ${words[2]} =~ ^[0-9]+$ ]] ;;
+    archive|commit) [[ ${#words[@]} == 2 ]] ;;
+    baseline) [[ ${#words[@]} == 4 && ${words[2]} =~ ^[0-9]+$ ]] ;;
+    handover) [[ ${#words[@]} == 4 && ${words[2]} =~ ^[0-9]+$ && ${words[3]} == true ]] ;;
+    *) printf 'SSH RPC 操作未登记\n' >&2; exit 1 ;;
+esac
+exec "$ROOT/bin/cpa-dr" --state-dir "$STATE" peer "${words[@]}"
