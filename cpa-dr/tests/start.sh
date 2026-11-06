@@ -144,3 +144,37 @@ unset MOCK_DOCKER_FAIL
 start --data-dir "$TMP/data dir" --output "$TMP/read-write" > /dev/null
 expect_failure start --output "$TMP/read-write" --read-only-data
 printf 'PASS: dotenv is not executable, configuration/build/health failures preserve state and return nonzero\n'
+
+# Missing host jq is installed in an isolated PATH, then the full startup runs.
+mkdir "$TMP/install-mock"
+for tool in bash dirname realpath openssl ssh-keygen stat flock cat mkdir chmod touch sed ln; do
+  ln -s "$(command -v "$tool")" "$TMP/install-mock/$tool"
+done
+ln -s "$TMP/mock/docker" "$TMP/install-mock/docker"
+export MOCK_APT_LOG="$TMP/apt.log" MOCK_INSTALL_BIN="$TMP/install-mock"
+MOCK_HOST_JQ=$(command -v jq); export MOCK_HOST_JQ
+cat > "$TMP/install-mock/apt-get" <<'MOCK'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >> "$MOCK_APT_LOG"
+case "$*" in
+  update) ;;
+  'install -y --no-install-recommends jq') ln -s "$MOCK_HOST_JQ" "$MOCK_INSTALL_BIN/jq";;
+  *) echo "Unexpected package operation: $*" >&2; exit 8;;
+esac
+MOCK
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP/install-mock/apt-cache"
+cat > "$TMP/install-mock/sudo" <<'MOCK'
+#!/usr/bin/env bash
+[[ ${1:-} != -- ]] || shift
+exec "$@"
+MOCK
+chmod +x "$TMP/install-mock/apt-get" "$TMP/install-mock/apt-cache" "$TMP/install-mock/sudo"
+PATH="$TMP/install-mock" start --yes --data-dir "$TMP/data dir" --output "$TMP/installed-deployment" > "$TMP/installed.out"
+grep -q '服务已启动' "$TMP/installed.out"
+grep -qx 'install -y --no-install-recommends jq' "$MOCK_APT_LOG"
+installed_identity=$(sha256sum "$TMP/installed-deployment/.env" "$TMP/installed-deployment/state-native/ssh/id_ed25519")
+PATH="$TMP/install-mock" start --yes --output "$TMP/installed-deployment" > "$TMP/installed-repeat.out"
+[[ $(wc -l < "$MOCK_APT_LOG") == 2 ]]
+[[ $(sha256sum "$TMP/installed-deployment/.env" "$TMP/installed-deployment/state-native/ssh/id_ed25519") == "$installed_identity" ]]
+printf 'PASS: missing jq installation continues through full startup; rerun skips installation and preserves secrets\n'

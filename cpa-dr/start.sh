@@ -2,16 +2,22 @@
 # One-command Compose deployment; configuration is data, never Shell code.
 set -Eeuo pipefail
 umask 077
-ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-data='' output="$ROOT" port='' ssh_port='' read_only=0
+script_directory=.
+[[ ${BASH_SOURCE[0]} != */* ]] || script_directory=${BASH_SOURCE[0]%/*}/
+ROOT=$(cd -- "$script_directory" && pwd)
+data='' output="$ROOT" port='' ssh_port='' read_only=0 install_deps=1 assume_yes=0
 usage() {
-  cat <<'HELP'
+  local line
+  while IFS= read -r line; do printf '%s\n' "$line"; done <<'HELP'
 用法：bash start.sh [--data-dir TARGET] [--output DIR] [--port 8787]
-                     [--ssh-port 2222] [--read-only-data]
+                     [--ssh-port 2222] [--read-only-data] [--yes | --no-install-deps]
 首次运行提供已有 CPA 数据父目录；终端运行未指定时交互输入。
 已有 .env 可直接重跑；重复传入的参数须与原配置一致，不覆盖配置和密钥。
-需要预装 Docker Engine、支持 --wait/--wait-timeout 的 Compose v2、
-Bash、coreutils、OpenSSL、OpenSSH 客户端、util-linux 和 jq；不自动安装系统软件。
+需要 Bash、Docker Engine、支持 --wait/--wait-timeout 的 Compose v2、
+coreutils、OpenSSL、OpenSSH 客户端、util-linux 和 jq。
+缺失依赖时提示确认后用 apt-get/dnf/yum 安装；普通用户通过 sudo 安装。
+--yes 明确允许非交互安装；--no-install-deps 只检查，不安装。
+只使用现有软件源；Docker daemon 及访问权限仍须就绪。
 HELP
 }
 fail() { printf '启动失败：%s\n' "$*" >&2; exit 1; }
@@ -26,10 +32,13 @@ while (($#)); do
       esac
       shift 2;;
     --read-only-data) read_only=1; shift;;
+    --yes) assume_yes=1; shift;;
+    --no-install-deps) install_deps=0; shift;;
     --help|-h) usage; exit 0;;
     *) fail "未知参数：$1（使用 --help 查看用法）";;
   esac
 done
+((assume_yes == 0 || install_deps == 1)) || fail '--yes 与 --no-install-deps 不可同时使用'
 for value in "$port" "$ssh_port"; do
   [[ -n $value ]] || continue
   [[ $value =~ ^[0-9]+$ && ${#value} -le 5 ]] || fail '端口须在1到65535之间'
@@ -37,9 +46,9 @@ for value in "$port" "$ssh_port"; do
 done
 # Do not let unrelated shell exports override the private deployment file.
 unset ADMIN_TOKEN CPA_DATA_PATH STATE_PATH PORT SSH_PORT BIND_HOST SSH_BIND_HOST DATA_ACCESS
-for command in docker realpath openssl ssh-keygen stat flock jq; do
-  command -v "$command" >/dev/null || fail "缺少命令：$command；请先安装 README 列出的宿主依赖"
-done
+# shellcheck source=scripts/start-dependencies.sh
+source "$ROOT/scripts/start-dependencies.sh"
+cpa_start_ensure_dependencies "$install_deps" "$assume_yes"
 docker compose version >/dev/null || fail '请安装 Docker Compose v2 插件'
 up_help=$(docker compose up --help) || fail '读取 Compose 启动选项失败'
 [[ $up_help == *--wait-timeout* && $up_help == *--wait* ]] || fail '请升级 Compose v2，须支持 up --wait --wait-timeout'

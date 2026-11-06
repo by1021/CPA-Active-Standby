@@ -85,3 +85,21 @@ PASS: config/role/SSH keys persist across container restart
 先红后绿：入口回归最初报`FAIL: start.sh is missing`；实现后通过。首次真实部署发现本机Compose不支持`config --environment`，改为已支持的`config --format json`并用宿主jq解析实际模型，mock与真部署复验均通过。未安装宿主软件包、未启用实际双机备份、未修改现有CPA/Cloudflare。
 
 普通独立复审原样输出见 [入口复审](review-start.md)，源码集合摘要和审查范围由该记录说明；不是正式Athena review凭证。
+
+## 启动时确认安装缺失依赖（2026-11-06）
+
+现行依赖策略见 [依赖安装设计](dependency-design.md)，替代初版「缺少依赖直接退出」行为；仍未初始化 `.ai_state`，下列为普通本地验证，不是正式 Athena 门禁凭证。
+
+| 检查 | 可复验命令 | 结果 |
+|---|---|---|
+| 依赖安装隔离模拟 | `athena run -- bash cpa-dr/tests/dependencies.sh` | apt-get/dnf/yum 映射、缺少 jq/Docker/Compose、旧 Compose、软件源候选；Debian Compose v2 同名包/epoch、CLI 拆包及 RPM 候选、排除 v1；coreutils 去重与无 dirname 自举；终端确认/拒绝/回车；非交互未授权及禁用安装；索引、安装、复检与 sudo 错误；root 与降 UID 后的普通用户分支通过 |
+| 完整入口回归 | `athena run -- bash cpa-dr/tests/start.sh` | 原有启动/重跑/路径/配置保护通过；隔离 PATH 缺少 jq 时模拟安装后完整启动成功，重跑保留配置和密钥且不再安装 |
+| 原有部署回归 | `athena run -- bash cpa-dr/tests/deployment.sh` | 初始化权限、状态保护、路径隔离和 systemd dry-run 通过 |
+| 静态检查 | `athena run -- shellcheck --severity=warning cpa-dr/start.sh cpa-dr/scripts/start-dependencies.sh cpa-dr/tests/dependencies.sh cpa-dr/tests/start.sh` | ShellCheck、逐文件 Bash 语法、`git diff --check` 通过 |
+| 实际 Compose 启动/重跑 | `athena run -- bash cpa-dr/tests/compose_smoke.sh` | 本机 Engine 26.1.5、Compose 2.26.1；临时项目构建、健康等待、重跑状态保护与 CGI 检查通过，测试容器结束清理 |
+
+先红后绿：新增缺少 jq 的安装回归最初报「未知参数：--yes」及「confirmed missing jq did not trigger installation」；实现后通过。独立复审指出 Debian 的 Compose 命名及 Docker CLI 拆包；追加回归复现「Debian Compose v2 package was not selected」，修正后通过。本机包管理器元数据及 `dpkg-query -S` 已核对两处拆包事实。
+
+依赖安装、sudo 和 RPM 流程使用临时脚本模拟，不实际安装宿主软件包；真实发行版软件源、sudo 策略和缺少 Docker 时的安装结果待目标宿主验证。实际 Compose 测试只启动独立临时项目，不修改现有 CPA、Cloudflare 或备份配置。
+
+本轮独立只读复审记录见 [依赖安装复审](review-dependencies.md)。

@@ -24,7 +24,11 @@ cd cpa-dr
 bash start.sh --data-dir TARGET
 ```
 
-`start.sh` 检查宿主依赖与 Docker daemon，复用初始化工具生成配置，构建/启动并等待管理服务健康（最多120秒），成功后显示实际管理地址、管理员令牌和本机 SSH 公钥。脚本可从任意工作目录调用；**不自动安装 Docker/系统软件、不修改现有 CPA，也不自动启用备份**。
+`start.sh` 检查宿主依赖；缺少时列出缺失项，提示「是否安装并继续启动？[y/N]」，输入 `y` 后安装并复检，再检查 Docker daemon、初始化和启动服务。安装使用现有软件源的 `apt-get`、`dnf` 或 `yum`；root 直接安装，普通用户只对软件包命令调用 `sudo`。依赖齐全时不操作软件包，拒绝确认或安装失败时退出，不生成配置或启动容器。
+
+脚本复用初始化工具生成配置，构建/启动并等待管理服务健康（最多120秒），成功后显示实际管理地址、管理员令牌和本机 SSH 公钥。可从任意工作目录调用；**不修改现有 CPA，也不自动启用备份**。Docker/Compose 缺失或 Compose 等待能力不足时也会提示安装/升级；仅选择当前软件源中可用的包，不添加软件源、不下载执行远程安装器。Docker daemon 须已启动且当前用户有访问权限；脚本不额外调整服务或用户组。
+
+兼容不同发行版的软件包命名：Compose 可来自 `docker-compose-v2`、`docker-compose-plugin` 或版本至少为 v2 的 `docker-compose`；旧版 v1 包不选用。若 `docker.io` 的包元数据将 `docker-cli` 列为独立推荐/依赖包，则同时显式安装 CLI，避免 `--no-install-recommends` 漏装。
 
 首次也可以直接执行 `bash start.sh`，按提示输入数据父目录；非交互运行必须提供 `--data-dir`。已有 `.env` 时直接重跑即可，保留配置、令牌、SSH 密钥和状态：
 
@@ -32,7 +36,13 @@ bash start.sh --data-dir TARGET
 bash start.sh
 # 首次自定义端口和只读挂载（不是在已有配置上静默覆盖）
 bash start.sh --data-dir TARGET --port 8787 --ssh-port 2222 --read-only-data
+# 无人值守：明确允许安装缺失依赖，首次还需提供数据目录
+bash start.sh --yes --data-dir TARGET
+# 只检查依赖，不安装宿主软件包
+bash start.sh --no-install-deps
 ```
+
+非交互运行缺少依赖时，必须显式传 `--yes` 才安装；它只确认依赖安装，不跳过数据、配置、权限或健康检查。`--yes` 和 `--no-install-deps` 互斥。apt 安装前刷新软件包索引；网络、软件源、sudo 权限或包版本问题会显示错误并非零退出。其他包管理器可预装 README 列出的依赖后运行。
 
 重复传入相同初始化参数可以重跑；与已有 `.env` 冲突的参数会报错。修改端口、监听地址或读写模式，应明确编辑 `.env` 后重跑。可用 `--output DIR` 将配置/状态保存在独立部署目录；后续也要带上相同 `--output DIR`，镜像仍从脚本旁源码构建。脚本不执行 `.env` 中的 Shell 代码，并忽略外部同名令牌、挂载和端口环境变量，以文件配置为准。
 
