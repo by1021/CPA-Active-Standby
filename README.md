@@ -22,8 +22,7 @@ CPA 双机主备部署文档与可部署的主备容灾备份服务。
 
 ```bash
 cd cpa-dr
-bash scripts/setup.sh --data-dir TARGET
-docker compose up -d --build
+bash start.sh --data-dir TARGET
 ```
 
 服务使用 Bash、rsync、tar、jq、OpenSSH 和 sqlite3 原生命令，无 Python 后端。登录中文控制台，设置主／备角色、数据标签与路径、备份周期及对端 SSH 地址；交换公钥、核对主机指纹后启用定时任务。默认管理地址仅绑定 `127.0.0.1:8787`；远程管理和跨机连接见服务说明。旧脚本与本服务选择一种调度方式，不同时对同一数据执行接管或恢复。

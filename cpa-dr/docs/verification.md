@@ -70,3 +70,18 @@ PASS: config/role/SSH keys persist across container restart
 测试只使用临时数据、独立Docker网络和回环随机端口，结束自动清理。没有执行宿主机systemd安装、真实CPA/Cloudflare变更或线上数据恢复；systemd检查为安装脚本dry-run，不宣称宿主单元已经启动。
 
 真实CPA版本、UID/挂载、OAuth刷新、SSE排空、启停驱动和入口隔离仍待部署环境演练。文件在线备份不承诺跨文件事务、零丢失或网络分区自动仲裁；接管、恢复与回切需要管理员确认。旧状态和历史不自动转换/删除。
+
+## 一键安装入口（2026-11-06）
+
+需求与验收见 [入口设计](start-design.md)，本轮只新增 Docker 安装入口，不改运行后端或现有 CPA。以下命令在仓库根目录实跑通过；仍未启用 `.ai_state`，不宣称正式 Athena 门禁放行或真实服务器部署。
+
+| 检查 | 可复验命令 | 结果 |
+|---|---|---|
+| 入口回归 | `athena run -- bash cpa-dr/tests/start.sh` | 帮助/参数/非交互/daemon/Compose能力；任意工作目录；0600；首次与相同参数重跑；冲突参数、缺失挂载、源码/状态嵌套拒绝；外部环境变量不覆写文件；dotenv不执行；配置/构建/健康失败保留状态且非零退出 |
+| 原有部署回归 | `athena run -- bash cpa-dr/tests/deployment.sh` | 初始化权限、已有配置保护、路径隔离与systemd dry-run通过 |
+| 静态检查 | `athena run -- shellcheck --severity=warning cpa-dr/start.sh cpa-dr/tests/start.sh cpa-dr/tests/compose_smoke.sh` | ShellCheck warning级、Bash语法和`git diff --check`通过 |
+| 真正安装/重跑 | `athena run -- bash cpa-dr/tests/compose_smoke.sh` | Docker Engine 26.1.5、Compose 2.26.1；临时数据与独立项目一键构建/启动/健康等待，原命令重跑保留.env/令牌/私钥及node ID；真实CGI认证、同源写入、跨域403通过；结束清理测试项目 |
+
+先红后绿：入口回归最初报`FAIL: start.sh is missing`；实现后通过。首次真实部署发现本机Compose不支持`config --environment`，改为已支持的`config --format json`并用宿主jq解析实际模型，mock与真部署复验均通过。未安装宿主软件包、未启用实际双机备份、未修改现有CPA/Cloudflare。
+
+普通独立复审原样输出见 [入口复审](review-start.md)，源码集合摘要和审查范围由该记录说明；不是正式Athena review凭证。

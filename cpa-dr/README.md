@@ -15,18 +15,30 @@
 
 ## 1. Docker 部署（主、备两台分别执行）
 
-宿主机需要 Docker、Compose，以及用于初始化的 Bash、coreutils、OpenSSH 客户端和 OpenSSL。其他原生命令打包进镜像；不是假定所有 Linux 系统已经预装这些工具。
+宿主机需要 Docker、Compose，以及用于初始化/检查的 Bash、coreutils、OpenSSH 客户端、OpenSSL、util-linux（`flock`）和 jq。其他原生命令打包进镜像；不是假定所有 Linux 系统已经预装这些工具。
 
 `TARGET` 替换为已存在的 CPA **数据父目录**。它必须与服务源码、部署目录和状态目录独立。
 
 ```bash
 cd cpa-dr
-bash scripts/setup.sh --data-dir TARGET
-docker compose up -d --build
-docker compose ps
+bash start.sh --data-dir TARGET
 ```
 
-初始化输出管理员令牌和本机 SSH 公钥；`.env`、私钥、管理员令牌权限为 `0600`。已有 `.env` 不覆盖；状态默认使用新目录 `state-native/`。
+`start.sh` 检查宿主依赖与 Docker daemon，复用初始化工具生成配置，构建/启动并等待管理服务健康（最多120秒），成功后显示实际管理地址、管理员令牌和本机 SSH 公钥。脚本可从任意工作目录调用；**不自动安装 Docker/系统软件、不修改现有 CPA，也不自动启用备份**。
+
+首次也可以直接执行 `bash start.sh`，按提示输入数据父目录；非交互运行必须提供 `--data-dir`。已有 `.env` 时直接重跑即可，保留配置、令牌、SSH 密钥和状态：
+
+```bash
+bash start.sh
+# 首次自定义端口和只读挂载（不是在已有配置上静默覆盖）
+bash start.sh --data-dir TARGET --port 8787 --ssh-port 2222 --read-only-data
+```
+
+重复传入相同初始化参数可以重跑；与已有 `.env` 冲突的参数会报错。修改端口、监听地址或读写模式，应明确编辑 `.env` 后重跑。可用 `--output DIR` 将配置/状态保存在独立部署目录；后续也要带上相同 `--output DIR`，镜像仍从脚本旁源码构建。脚本不执行 `.env` 中的 Shell 代码，并忽略外部同名令牌、挂载和端口环境变量，以文件配置为准。
+
+`.env`、私钥、管理员令牌初始化权限为 `0600`；状态默认使用新目录 `state-native/`。启动失败返回非零，保留配置和数据并提示查看日志；缺失挂载目录时拒绝自动创建空目录。登录信息包含秘密，不要上传终端输出。若只需初始化、不启动容器，仍可使用 `bash scripts/setup.sh --data-dir TARGET`，再手动执行 `docker compose up -d --build`。
+
+Compose v2 须支持 `docker compose up --wait --wait-timeout`；旧插件需先升级。健康通过仅表示管理服务存活，角色设置、双端配对和真实 CPA 业务验证仍按下文执行。
 
 打开 `http://127.0.0.1:8787`，使用初始化显示的管理员令牌登录。远程管理使用既有 SSH 本地转发：
 
@@ -195,6 +207,7 @@ bin/cpa-dr --state-dir ./state-native status
 ## 6. 验证与边界
 
 ```bash
+bash tests/start.sh
 bash tests/core.sh
 bash tests/service.sh
 bash tests/api.sh

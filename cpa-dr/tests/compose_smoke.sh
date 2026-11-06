@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercise the documented setup + Compose deployment on temporary native data.
+# Exercise the one-command installer and repeat deployment on temporary data.
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
@@ -17,10 +17,16 @@ mkdir "$TMP/data"
 printf '{"fixture":true}\n' > "$TMP/data/sample.json"
 # Isolated test projects use random high ports, not either live service port.
 PORT=$(( 32000 + RANDOM % 8000 )); SSH_PORT=$(( 41000 + RANDOM % 8000 ))
-bash scripts/setup.sh --data-dir "$TMP/data" --output "$TMP/deployment" --port "$PORT" --ssh-port "$SSH_PORT" > "$TMP/setup-output"
 COMPOSE=(docker compose --env-file "$TMP/deployment/.env" -p "$NAME")
+COMPOSE_PROJECT_NAME="$NAME" bash "$ROOT/start.sh" --data-dir "$TMP/data" --output "$TMP/deployment" --port "$PORT" --ssh-port "$SSH_PORT" > "$TMP/start-output"
 "${COMPOSE[@]}" config --quiet
-"${COMPOSE[@]}" up -d --build
+identity_before=$(sha256sum "$TMP/deployment/.env" "$TMP/deployment/state-native/admin.token" "$TMP/deployment/state-native/ssh/id_ed25519")
+node_before=$(jq -r .node_id "$TMP/deployment/state-native/config.json")
+COMPOSE_PROJECT_NAME="$NAME" bash "$ROOT/start.sh" --data-dir "$TMP/data" --output "$TMP/deployment" --port "$PORT" --ssh-port "$SSH_PORT" > "$TMP/repeat-output"
+[[ $(sha256sum "$TMP/deployment/.env" "$TMP/deployment/state-native/admin.token" "$TMP/deployment/state-native/ssh/id_ed25519") == "$identity_before" ]]
+[[ $(jq -r .node_id "$TMP/deployment/state-native/config.json") == "$node_before" ]]
+grep -q "http://127.0.0.1:$PORT" "$TMP/start-output"
+grep -q '服务已启动' "$TMP/repeat-output"
 for _ in {1..120}; do
   if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then break; fi
   sleep .5
@@ -42,4 +48,4 @@ done
 [[ $(docker inspect --format '{{.State.Health.Status}}' "$ID") == healthy ]]
 [[ $(stat -c %a "$TMP/deployment/.env") == 600 ]]
 [[ -f $TMP/deployment/state-native/config.json && -f $TMP/deployment/state-native/ssh/ssh_host_ed25519_key ]]
-printf 'PASS: documented native setup + hardened Compose, real CGI authentication, same-origin writes, cross-origin rejection and healthcheck\n'
+printf 'PASS: one-command install and identical rerun preserve credentials/node ID; hardened Compose, real CGI authentication, same-origin writes, cross-origin rejection and healthcheck\n'
