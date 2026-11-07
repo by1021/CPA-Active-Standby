@@ -178,6 +178,14 @@ cpa_start_owned_directory() {
 cpa_start_confirm_uninstall() {
   local answer
   printf '\n即将%s本服务：%s\n专用状态：%s\n原始数据始终保留：%s\n' "$([[ $purge == 1 ]] && printf '卸载并清除' || printf 卸载)" "$deployment" "$state" "$data"
+  if [[ $deployment == docker ]]; then
+    printf '停止/移除对象：Compose 项目 %s 的本服务容器和网络\n' "$project"
+    ((purge == 0)) || printf '删除路径：%s\n  %s\n  %s\n' "$state" "$envfile" "$manifest"
+  else
+    printf '停止/删除单元：%s\n' "${CPA_START_UNITS[*]}"
+    ((purge == 0)) || printf '删除专用目录：%s\n  %s\n  /run/cpa-dr-native\n删除本服务配置：%s（未知文件保留）\n' "$state" "$native_root" "$output"
+  fi
+  printf '保留：原始 CPA 数据、源码、共用依赖、无关服务和未知配置。\n'
   ((purge == 0)) || printf '清除会删除本服务的备份历史、回滚副本、令牌和SSH密钥。\n'
   ((assume_yes == 0)) || return 0
   [[ -t 0 ]] || fail '非交互卸载/清除须明确传 --yes'
@@ -190,19 +198,27 @@ cpa_start_uninstall_docker() {
   id=$(jq -r .install_id <<< "$record")
   cpa_start_owned_directory "$state" "$id"
   cpa_start_confirm_uninstall
+  # Host-readable idle state is not proof that the running Compose container
+  # belongs to this installation. Check labels/mounts for every caller/status;
+  # an absent container remains valid for pending/uninstalled cleanup.
+  cpa_manager_snapshot
+  [[ -n $record && -z $manager_reason ]] || fail '任务状态或容器归属未知，未执行卸载'
+  cpa_manager_guard
+  trap 'cpa_manager_release_guard; rm -f -- "$lock_file"' EXIT
   if ((purge && EUID != 0)); then
     command -v sudo >/dev/null || fail '清除容器创建的私有备份需要root或sudo；服务和数据尚未删除'
     privilege=(sudo --)
     "${privilege[@]}" true || fail '清除权限检查失败，服务和备份尚未删除'
   fi
   "${compose[@]}" down --timeout 60 || fail '停止/移除容器失败，未清除配置或备份'
+  cpa_manager_release_guard
   cpa_start_record_status uninstalled
   if ((purge)); then
     cpa_start_owned_directory "$state" "$id"
     "${privilege[@]}" rm -rf --one-file-system -- "$state" || fail '清除专用状态失败，保留安装记录'
     rm -f -- "$envfile" "$manifest" || fail '清除部署配置失败'
     printf '已卸载并清除Docker部署；原始数据和源码保留。\n'
-  else printf '已卸载Docker部署；配置、密钥和备份保留，重跑 start.sh 可重新启动。\n'; fi
+  else printf '已卸载Docker部署；配置、密钥和备份保留，运行 start.sh install 可恢复。\n'; fi
 }
 cpa_start_native_paths() {
   local a b
@@ -325,6 +341,7 @@ cpa_start_uninstall_native() {
   cpa_start_native_units_check
   for file in nginx.conf sshd.conf .env.bootstrap.json; do cpa_start_no_links "$output/$file"; done
   cpa_start_confirm_uninstall
+  cpa_manager_guard
   # Stop the timer and all writers before removing any units or private files.
   local -a loaded=() enabled=()
   for file in "${CPA_START_UNITS[@]}"; do
@@ -345,5 +362,5 @@ cpa_start_uninstall_native() {
     for file in "${CPA_START_UNITS[@]}" nginx.conf sshd.conf .env.bootstrap.json; do rm -f -- "$output/$file"; done
     rm -f -- "$manifest"
     printf '已卸载并清除Linux本地部署；原始数据、源码及未知配置文件保留。\n'
-  else printf '已卸载Linux本地单元；代码、配置和备份保留，重跑 start.sh 可重新启用。\n'; fi
+  else printf '已卸载Linux本地单元；代码、配置和备份保留，运行 start.sh install 可恢复。\n'; fi
 }

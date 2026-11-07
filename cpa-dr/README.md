@@ -13,7 +13,7 @@
 
 **自动执行的是备份；接管、恢复、回切仍需管理员确认。不会修改现有 CPA、Cloudflare Worker、域名或 Tunnel。管理接口 `/healthz` 只说明管理服务存活，不代表 CPA 已准备好接收业务流量。** 快照是明文数据，建议磁盘加密、受限权限及独立离机备份。
 
-## 1. 安装向导（主、备两台分别执行）
+## 1. 管理菜单与安装向导（主、备两台分别执行）
 
 `TARGET` 替换为已存在的 CPA **数据父目录**，必须与服务源码、部署目录和状态目录独立。首次终端安装：
 
@@ -24,10 +24,30 @@ bash start.sh
 
 | 顺序 | 输入 | 保存结果 |
 |---|---|---|
-| 1 | 本机为主机或备机 | `primary` / `backup` |
-| 2 | 数据父目录；逐项输入备份路径、标签、类型 | 支持目录、普通文件、SQLite，多项不重叠 |
-| 3 | 确认角色和数据 | 取消不安装依赖、不生成配置 |
-| 4 | `1` Linux 本地；`2` Docker | 安装所选方式的依赖及服务 |
+| 1 | 主菜单选择安装 / 恢复已有安装 | 不自动启动已有服务 |
+| 2 | 本机为主机或备机 | `primary` / `backup` |
+| 3 | 数据父目录；逐项输入备份路径、标签、类型 | 支持目录、普通文件、SQLite，多项不重叠 |
+| 4 | `1` Linux 本地；`2` Docker，可选目录及端口调整 | 展示所选方式的目录、监听与依赖计划 |
+| 5 | 完整安装计划确认，默认否 | 确认前不提权、安装依赖或生成配置 |
+
+主菜单还包括卸载、详细状态、只读诊断、服务启停/重启和日志。操作完成、失败或取消后刷新菜单；无参数非交互运行报用法错误，不等待输入。
+
+**行为变更：无参数重跑不再自动构建/启动。恢复部署用 `install`，只启动已有服务用 `start`。** `status`/`doctor` 成功输出检查报告即返回 0，报告中仍可能包含异常或未知；它们不是自动化健康门禁。
+
+```bash
+bash start.sh menu --output DIR       # 自定义配置目录的循环菜单
+bash start.sh status --output DIR     # 只读；不安装、不初始化、不提权
+bash start.sh doctor --output DIR     # 依赖、目录权限、端口及健康诊断
+bash start.sh logs --output DIR --tail 50
+bash start.sh logs --output DIR --follow  # Ctrl+C 结束持续查看
+bash start.sh stop --output DIR       # 先展示计划，再确认
+bash start.sh start --output DIR      # 只启动已有容器/已安装单元
+bash start.sh restart --output DIR    # 停止、启动后检查服务/API/SSH
+```
+
+默认探测当前源码目录与 `/etc/cpa-dr-native`，不扫描全盘。多部署先选择目标或明确 `--output`/`--deployment`。安装记录和实时进程分开显示；缺工具、记录损坏、旧 `.env` 或权限不足不等于未安装。管理页面、认证 API 和 SSH 握手分别检查；备份角色/任务/最近结果来自已有状态，对端可达性是历史记录，不自动跨机检测。状态/诊断隐藏秘密，日志是原文，可能包含业务信息。
+
+服务管理只操作本服务，停止/重启/卸载取得服务任务锁并拒绝中断运行任务；状态未知时不擅自停写。非交互明确加 `--yes`。本地写操作需 root/sudo，只读查询不自动提权。Docker 普通客户端通过已有运行容器读取 root 私有状态，不创建辅助容器；已停止容器的不可读配置显示未知。停止不禁用开机启动配置，重启主机后的行为保持原部署设置。
 
 路径可相对数据父目录，回车选择整个父目录；标签只能使用字母、数字、下划线和短横线。**两端使用相同标签和类型，路径可以不同。** 备机恢复目标可以尚未存在，父目录仍须预先创建；主机来源必须存在。SQLite 应单独选择 SQLite 类型，不把在线数据库当作普通目录文件备份。
 
@@ -46,13 +66,13 @@ bash start.sh --role primary --deployment docker --data-dir TARGET \
 # 备机，Linux 本地；备机路径可与主机不同
 bash start.sh --role backup --deployment native --data-dir TARGET \
   --source auths:directory:auths --yes
-# 已有部署直接重跑；不重新选择或覆盖页面设置
-bash start.sh
+# 已有部署无参数运行进入菜单；显式恢复安装保留页面设置
+bash start.sh install
 # 独立配置目录：首次添加 --output DIR，之后也要指定
-bash start.sh --output DIR
+bash start.sh install --output DIR
 ```
 
-`--yes` 确认缺失依赖安装及卸载/清除，不代替角色、目录、部署方式参数，也不跳过路径/权限/健康检查。`--no-install-deps` 只检查、不安装；二者互斥。终端向导仍负责缺少的选择。冲突的角色、数据、方式或端口参数报错，不悄悄覆盖原配置。选择有历史恢复点的节点身份仍受原有角色保护约束。
+`--yes` 确认安装计划、缺失依赖安装、服务管理及卸载/清除，不代替角色、目录、部署方式参数，也不跳过路径/权限/健康检查。`--no-install-deps` 只检查、不安装；二者互斥。旧带参数安装命令继续兼容，终端向导负责缺少的选择。冲突参数不悄悄覆盖原配置。选择有历史恢复点的节点身份仍受原有角色保护约束。
 
 可选 `--port 8787`、`--ssh-port 2222`、`--read-only-data`；本地还支持 `--install-root DIR`、`--state-dir DIR`、`--bind-host HOST`。默认监听 loopback。新安装记录写入配置目录的 `.env.docker.json` 或 `.env.native.json`，权限 `0600`；不要删除或交换记录和目录所有权标记。安装失败保留配置、密钥与状态，重跑可继续未完成的引导配置；成功部署重跑保留节点 ID、页面变更和定时开关。
 
@@ -60,9 +80,9 @@ bash start.sh --output DIR
 
 ### 依赖与权限
 
-选择部署方式后才列出缺失项并询问「是否安装并继续启动？[y/N]」。确认后从现有 `apt-get`、`dnf` 或 `yum` 软件源安装并复检；不添加软件源、不下载执行远程安装器。root 直接安装，普通用户的软件包操作通过 sudo；**本地服务安装/卸载也通过 sudo**。
+选择部署方式后先展示完整计划，最终确认后才询问缺失依赖安装。确认后从现有 `apt-get`、`dnf` 或 `yum` 软件源安装并复检；不添加软件源、不下载执行远程安装器。root 直接安装，普通用户的软件包操作通过 sudo；**本地服务安装/卸载也通过 sudo**。
 
-- Docker 宿主需要 Bash、coreutils、OpenSSH 客户端、OpenSSL、util-linux 和 jq，以及 Engine 与支持 `up --wait --wait-timeout` 的 Compose v2。依赖齐全不操作软件包；Docker daemon 和访问权限仍须就绪，不自动调整 Docker 服务或用户组。
+- Docker 宿主需要 Bash、coreutils（含 timeout）、curl、OpenSSH 客户端、OpenSSL、util-linux 和 jq，以及 Engine 与支持 `up --wait --wait-timeout` 的 Compose v2。curl/timeout 用于管理与就绪检测；依赖齐全不操作软件包。Docker daemon 和访问权限仍须就绪，不自动调整 Docker 服务或用户组。
 - Compose 软件包兼容 `docker-compose-v2`、`docker-compose-plugin` 或 v2 的 `docker-compose`，不选 v1；`docker.io` 元数据声明独立 `docker-cli` 时同时安装 CLI。
 - Linux 本地只检查/安装原生服务命令，不要求 Docker；需要运行中的 systemd、Nginx、fcgiwrap、spawn-fcgi、OpenSSH、rsync、sqlite3、jq 等。服务模板及 `www-data` 组以 Debian/Ubuntu 为基准，其他发行版的包可从现有源安装，但具体路径、组和实际 systemd 启动须核对。
 - 非交互缺少依赖必须显式 `--yes` 才安装；拒绝、索引/安装/复检或 sudo 失败均返回非零。卸载只检查必要依赖，从不安装软件包。
@@ -113,7 +133,7 @@ bash start.sh --uninstall --deployment native
 | `--purge` | 额外删除专用状态、`.env` 和安装记录 | 额外删除专用代码、状态、运行目录及本服务配置/记录 |
 | 始终保留 | 原始 CPA 数据、源码、未知配置、镜像/共用依赖和无关项目 | 原始 CPA 数据、源码、未知配置、共用软件包和其他服务 |
 
-普通卸载后直接重跑即可重启，保留原身份与页面配置；清除后的新安装生成新身份，需重新配对。清理检查规范路径、符号链接、目录所有权及单元摘要；发现异常或服务停止失败时，不继续删除。Docker 的普通卸载不需额外提权，`--purge` 清除容器 root 创建的私有目录时需要 root/sudo，并在停止服务前检查权限。不要先手动删除安装记录。清除不会全局 prune 或卸载共享的软件包。
+普通卸载后运行 `bash start.sh install` 恢复，保留原身份与页面配置；清除后的新安装生成新身份，需重新配对。清理检查规范路径、符号链接、目录所有权及单元摘要；发现异常、运行任务或服务停止失败时，不继续删除。Docker 的普通卸载不需额外提权，`--purge` 清除容器 root 创建的私有目录时需要 root/sudo，并在停止服务前检查权限。不要先手动删除安装记录。清除不会全局 prune 或卸载共享的软件包。
 
 Linux 本地单元每次启动从持久状态恢复 `/run/cpa-dr-native` 的安装标记，避免系统重启清空运行目录后阻断重跑或卸载；配置、密钥与备份仍保存在持久目录中。
 
@@ -190,7 +210,7 @@ rm -f /tmp/cpa-dr-hostscan
 
 ## 3. Linux 宿主机直接部署 / systemd
 
-通常在 `start.sh` 向导选择 `1`，或使用 `--deployment native`，自动完成依赖、角色/数据配置和安装。下面保留低层手动安装及 dry-run；手动方式不运行交互向导。
+通常在 `start.sh` 主菜单选择安装，再在部署方式选择 `1`，或使用 `install --deployment native`，自动完成依赖、角色/数据配置和安装。下面保留低层手动安装及 dry-run；手动方式不运行交互向导。
 
 Debian/Ubuntu 安装原生软件包：
 

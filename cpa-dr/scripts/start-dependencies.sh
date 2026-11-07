@@ -2,10 +2,11 @@
 # Sourced by start.sh. Use only the host's configured package repositories.
 cpa_start_missing_dependencies() {
   local mode=${1:-docker} tool help
-  local -a required=(dirname realpath stat cat mkdir chmod flock jq sha256sum mktemp sync mv rm)
+  local -a required=(dirname realpath stat cat mkdir chmod flock jq sha256sum mktemp sync mv rm timeout)
   if [[ $mode != uninstall-* ]]; then required+=(touch openssl ssh-keygen); fi
   case $mode in
-    docker|uninstall-docker) required+=(docker);;
+    docker) required+=(docker curl);;
+    uninstall-docker) required+=(docker);;
     native) required+=(od tr date find grep sed awk tar rsync sqlite3 curl nginx spawn-fcgi fcgiwrap sshd systemctl cp install getent);;
     uninstall-native) required+=(systemctl);;
     *) fail "未知依赖检查模式：$mode";;
@@ -85,7 +86,7 @@ cpa_start_ensure_dependencies() {
   fi
   for tool in "${CPA_START_MISSING[@]}"; do
     case $tool in
-      dirname|realpath|stat|cat|mkdir|chmod|touch|sha256sum|mktemp|sync|mv|rm|od|tr|date|cp|install) package=coreutils;;
+      dirname|realpath|stat|cat|mkdir|chmod|touch|sha256sum|mktemp|sync|mv|rm|timeout|od|tr|date|cp|install) package=coreutils;;
       openssl|jq|grep|sed|tar|rsync|curl|nginx|spawn-fcgi|fcgiwrap) package=$tool;;
       ssh-keygen) package=openssh-client; [[ $manager == apt-get ]] || package=openssh-clients;;
       sshd) package=openssh-server;;

@@ -5,9 +5,10 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf -- "$TMP"' EXIT
 [[ -f $ROOT/start.sh ]] || { echo 'FAIL: start.sh is missing' >&2; exit 1; }
-mkdir -p "$TMP/mock" "$TMP/data dir" "$TMP/other-data"
+mkdir -p "$TMP/mock" "$TMP/data dir" "$TMP/other-data" "$TMP/containers"
 export MOCK_COMPOSE_LOG=$TMP/docker.log
 export MOCK_CPA_ROOT="$ROOT" MOCK_CPA_HOST_PATH="$PATH"
+export MOCK_CONTAINER_DIR="$TMP/containers"
 export PATH="$TMP/mock:$PATH"
 cat > "$TMP/mock/docker" <<'MOCK'
 #!/usr/bin/env bash
@@ -18,6 +19,26 @@ done
 printf '%q ' "$@" >> "$MOCK_COMPOSE_LOG"; printf '\n' >> "$MOCK_COMPOSE_LOG"
 failure=${MOCK_DOCKER_FAIL:-}
 if [[ ${1:-} == info ]]; then [[ $failure != info ]] || { echo 'fixture daemon unavailable' >&2; exit 7; }; exit 0; fi
+case ${1:-} in
+  ps)
+    project=''
+    for arg in "$@"; do [[ $arg != label=com.docker.compose.project=* ]] || project=${arg#label=com.docker.compose.project=}; done
+    [[ ! -f $MOCK_CONTAINER_DIR/$project.json ]] || printf 'fixture-%s\n' "$project"
+    exit 0;;
+  inspect)
+    project=${2#fixture-}
+    jq '[{Id:("fixture-"+.project),Config:{Labels:{"com.docker.compose.project":.project,"com.docker.compose.service":"cpa-dr"}},Mounts:[{Type:"bind",Source:.state,Destination:"/state"},{Type:"bind",Source:.data,Destination:"/data"}],State:{Running:true},NetworkSettings:{Ports:{}}}]' "$MOCK_CONTAINER_DIR/$project.json"
+    exit 0;;
+  exec)
+    project=${2#fixture-}; shift 2
+    state=$(jq -r .state "$MOCK_CONTAINER_DIR/$project.json")
+    if [[ $1 == cat ]]; then cat "$state${2#/state}"; exit 0; fi
+    [[ $1 == /opt/cpa-dr/bin/cpa-dr ]] || exit 8; shift
+    mapped=()
+    for arg in "$@"; do [[ $arg != /state && $arg != /state/* ]] || arg="$state${arg#/state}"; mapped+=("$arg"); done
+    PATH="$MOCK_CPA_HOST_PATH" "$MOCK_CPA_ROOT/bin/cpa-dr" "${mapped[@]}"
+    exit $?;;
+esac
 [[ ${1:-} == compose ]] || exit 8
 shift
 envfile='' project=''
@@ -58,6 +79,7 @@ case ${1:-} in
       [[ $failure != up ]] || { echo 'fixture build or health timeout' >&2; exit 7; }
       [[ " $* " == *' --build '* && " $* " == *' --wait '* && " $* " == *' --wait-timeout 120 '* ]] || exit 8
       read_env
+      jq -n --arg project "$project" --arg data "$data" --arg state "$state" '{project:$project,data:$data,state:$state}' > "$MOCK_CONTAINER_DIR/$project.json"
       PATH="$MOCK_CPA_HOST_PATH" "$MOCK_CPA_ROOT/bin/cpa-dr" --state-dir "$state" init --allowed-root /data >/dev/null
       if [[ ! -f $state/mock-container-initialized ]]; then
         jq '.peer.identity_file="/state/ssh/id_ed25519"|.peer.known_hosts_file="/state/ssh/known_hosts"' "$state/config.json" > "$state/config.new"
@@ -84,7 +106,9 @@ case ${1:-} in
     mapped=()
     for arg in "$@"; do [[ $arg != /state && $arg != /state/* ]] || arg="$state${arg#/state}"; mapped+=("$arg"); done
     PATH="$MOCK_CPA_HOST_PATH" "$MOCK_CPA_ROOT/bin/cpa-dr" "${mapped[@]}";;
-  down) [[ $failure != down ]] || { echo 'fixture stop failed' >&2; exit 7; };;
+  down)
+    [[ $failure != down ]] || { echo 'fixture stop failed' >&2; exit 7; }
+    rm -f -- "$MOCK_CONTAINER_DIR/$project.json";;
   ps) echo 'fixture cpa-dr healthy';;
   port)
     port=$(sed -n 's/^PORT=//p' "$envfile")
@@ -179,7 +203,7 @@ printf 'PASS: dotenv is not executable, configuration/build/health failures pres
 
 # Missing host jq is installed in an isolated PATH, then the full startup runs.
 mkdir "$TMP/install-mock"
-for tool in bash dirname realpath openssl ssh-keygen stat flock cat mkdir chmod touch sed ln sha256sum mktemp sync mv rm; do
+for tool in bash dirname realpath openssl ssh-keygen stat flock cat mkdir chmod touch sed ln sha256sum mktemp sync mv rm timeout curl; do
   ln -s "$(command -v "$tool")" "$TMP/install-mock/$tool"
 done
 ln -s "$TMP/mock/docker" "$TMP/install-mock/docker"
@@ -269,19 +293,29 @@ jq -e '.node_role=="backup" and (.sources|length)==3 and .enabled==false' "$RETR
 printf 'PASS: interrupted bootstrap resumes once without changing keys or node ID\n'
 
 pty_command=$(printf '%q ' bash "$ROOT/start.sh" --output "$TMP/wizard")
-printf '2\n%s\nauths\nauths\n1\ny\nsettings.json\nconfig\n2\ny\nusage.sqlite\nusage\n3\nn\ny\n2\n' "$TMP/selected" | script -q -e -c "$pty_command" /dev/null > "$TMP/wizard.out" 2>&1
+printf '2\n%s\nauths\nauths\n1\ny\nsettings.json\nconfig\n2\ny\nusage.sqlite\nusage\n3\nn\n2\nn\ny\n' "$TMP/selected" | script -q -e -c "$pty_command" /dev/null > "$TMP/wizard.out" 2>&1
 jq -e '.node_role=="backup" and (.sources|length)==3' "$TMP/wizard/state-native/config.json" >/dev/null
 role_line=$(grep -n '1. 选择本机角色' "$TMP/wizard.out" | cut -d: -f1)
 data_line=$(grep -n '2. 选择需要备份的数据' "$TMP/wizard.out" | cut -d: -f1)
-confirm_line=$(grep -n '3. 确认角色与备份数据' "$TMP/wizard.out" | cut -d: -f1)
-mode_line=$(grep -n '4. 选择部署方式' "$TMP/wizard.out" | cut -d: -f1)
-((role_line < data_line && data_line < confirm_line && confirm_line < mode_line))
+confirm_line=$(grep -n '4. 完整安装计划' "$TMP/wizard.out" | cut -d: -f1)
+mode_line=$(grep -n '3. 选择部署方式' "$TMP/wizard.out" | cut -d: -f1)
+((role_line < data_line && data_line < mode_line && mode_line < confirm_line))
 pty_command=$(printf '%q ' bash "$ROOT/start.sh" --output "$TMP/cancelled-wizard")
-log_before=$(sha256sum "$MOCK_COMPOSE_LOG")
-if printf '1\n%s\nauths\nauths\n1\nn\nn\n' "$TMP/selected" | script -q -e -c "$pty_command" /dev/null > "$TMP/cancelled.out" 2>&1; then echo 'wizard cancellation accepted' >&2; exit 1; fi
-[[ ! -e $TMP/cancelled-wizard && $(sha256sum "$MOCK_COMPOSE_LOG") == "$log_before" ]]
-! grep -q '4. 选择部署方式' "$TMP/cancelled.out"
-printf 'PASS: PTY wizard enforces role/data/confirmation/deployment order and cancellation has no deployment/package side effects\n'
+mutation_before=$(grep -c ' up -d ' "$MOCK_COMPOSE_LOG")
+if printf '1\n%s\nauths\nauths\n1\nn\n2\nn\nn\n' "$TMP/selected" | script -q -e -c "$pty_command" /dev/null > "$TMP/cancelled.out" 2>&1; then echo 'wizard cancellation accepted' >&2; exit 1; fi
+[[ ! -e $TMP/cancelled-wizard ]]
+# Read-only Compose capability probes are allowed; no mutation occurs before confirmation.
+[[ $(grep -c ' up -d ' "$MOCK_COMPOSE_LOG") == "$mutation_before" ]]
+grep -q '4. 完整安装计划' "$TMP/cancelled.out"
+printf 'PASS: PTY wizard enforces role/data/deployment/final-plan order and cancellation has no deployment/package side effects\n'
+
+pty_command=$(printf '%q ' bash "$ROOT/start.sh" install --output "$TMP/advanced-plan" --data-dir "$TMP/selected")
+if printf '1\nauths\nauths\n1\nn\n2\ny\n%s\n18879\n22229\nn\n' "$TMP/custom-plan" | script -q -e -c "$pty_command" /dev/null > "$TMP/advanced-plan.out" 2>&1; then echo 'advanced plan cancellation accepted' >&2; exit 1; fi
+grep -Fq "配置目录：$TMP/custom-plan" "$TMP/advanced-plan.out"
+grep -q '管理监听：127.0.0.1:18879' "$TMP/advanced-plan.out"
+grep -q '专用 SSH 端口：22229' "$TMP/advanced-plan.out"
+[[ ! -e $TMP/advanced-plan && ! -e $TMP/custom-plan ]]
+printf 'PASS: custom directory and port wizard appear in final plan; cancellation creates neither directory\n'
 
 down_count() { grep -c ' down ' "$MOCK_COMPOSE_LOG" || true; }
 down_before=$(down_count)

@@ -5,7 +5,7 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf -- "$TMP"' EXIT
 HOST_PATH=$PATH
-required=(bash dirname realpath stat cat mkdir chmod touch openssl ssh-keygen flock jq sha256sum mktemp sync mv rm)
+required=(bash dirname realpath stat cat mkdir chmod touch openssl ssh-keygen flock jq sha256sum mktemp sync mv rm timeout curl)
 reset_fixture() {
   rm -rf -- "${TMP:?}/bin" "$TMP/out"
   mkdir -p "$TMP/bin" "$TMP/out" "$TMP/tools" "$TMP/data"
@@ -13,7 +13,8 @@ reset_fixture() {
   for tool in "${required[@]}"; do ln -s "$(PATH=$HOST_PATH command -v "$tool")" "$TMP/bin/$tool"; done
   export FIXTURE_BIN="$TMP/bin" FIXTURE_LOG="$TMP/packages.log" FIXTURE_DOCKER_LOG="$TMP/docker.log"
   FIXTURE_JQ=$(PATH=$HOST_PATH command -v jq); FIXTURE_SSH=$(PATH=$HOST_PATH command -v ssh-keygen)
-  export FIXTURE_JQ FIXTURE_SSH
+  FIXTURE_CURL=$(PATH=$HOST_PATH command -v curl); FIXTURE_TIMEOUT=$(PATH=$HOST_PATH command -v timeout)
+  export FIXTURE_JQ FIXTURE_SSH FIXTURE_CURL FIXTURE_TIMEOUT
   export FIXTURE_COMPOSE=ready FIXTURE_FAIL='' FIXTURE_NO_PACKAGE='' FIXTURE_SPLIT_CLI=0 FIXTURE_COMPOSE_VERSION=2.26.1-4
   for tool in dirname realpath stat cat; do ln -sf "$(command -v "$tool")" "$TMP/tools/$tool"; done
   cat > "$TMP/docker-template" <<'MOCK'
@@ -38,6 +39,8 @@ if [[ ${1:-} == install ]]; then
   [[ $FIXTURE_FAIL != no-effect ]] || exit 0
   ln -sf "$FIXTURE_JQ" "$FIXTURE_BIN/jq"
   ln -sf "$FIXTURE_SSH" "$FIXTURE_BIN/ssh-keygen"
+  ln -sf "$FIXTURE_CURL" "$FIXTURE_BIN/curl"
+  ln -sf "$FIXTURE_TIMEOUT" "$FIXTURE_BIN/timeout"
   for tool in dirname realpath stat cat; do ln -sf "$FIXTURE_BIN/../tools/$tool" "$FIXTURE_BIN/$tool"; done
   if [[ $FIXTURE_SPLIT_CLI == 0 || " $* " == *' docker-cli '* ]]; then
     cp "$FIXTURE_BIN/../docker-template" "$FIXTURE_BIN/docker"
@@ -80,6 +83,13 @@ grep -qx 'apt-get update' "$FIXTURE_LOG" || { cat "$TMP/stderr" >&2; echo 'FAIL:
 grep -qx 'apt-get install -y --no-install-recommends jq' "$FIXTURE_LOG"
 grep -q 'fixture daemon reached' "$TMP/stderr"
 printf 'PASS: explicit noninteractive consent installs missing jq and resumes preflight\n'
+
+reset_fixture
+rm "$TMP/bin/timeout" "$TMP/bin/curl"
+expect_stop --yes
+grep -qx 'apt-get install -y --no-install-recommends coreutils curl' "$FIXTURE_LOG"
+grep -q 'fixture daemon reached' "$TMP/stderr"
+printf 'PASS: management readiness dependencies timeout/curl map to coreutils/curl\n'
 
 reset_fixture
 invoke --help
@@ -215,6 +225,7 @@ if ((EUID == 0)) && command -v setpriv >/dev/null; then
   cp "$ROOT/start.sh" "$TMP/app/start.sh"
   cp "$ROOT/scripts/start-dependencies.sh" "$TMP/app/scripts/"
   cp "$ROOT/scripts/start-lifecycle.sh" "$TMP/app/scripts/"
+  cp "$ROOT/scripts/start-manager.sh" "$TMP/app/scripts/"
   cp "$ROOT/lib/common.sh" "$TMP/app/lib/"
   chmod 755 "$TMP" "$TMP/app" "$TMP/app/scripts" "$TMP/app/lib"
   chmod 777 "$TMP/bin" "$TMP/out"
@@ -261,7 +272,7 @@ printf 'n\n' | script -q -e -c "$pty_command" /dev/null > "$TMP/pty" 2>&1 && exi
 grep -q '\[y/N\]' "$TMP/pty"
 printf '\n' | script -q -e -c "$pty_command" /dev/null > "$TMP/pty" 2>&1 && exit 1
 [[ ! -s $FIXTURE_LOG ]]
-printf 'y\n' | script -q -e -c "$pty_command" /dev/null > "$TMP/pty" 2>&1 && exit 1
+printf 'y\ny\n' | script -q -e -c "$pty_command" /dev/null > "$TMP/pty" 2>&1 && exit 1
 grep -qx 'apt-get install -y --no-install-recommends jq' "$FIXTURE_LOG"
 grep -q 'fixture daemon reached' "$TMP/pty"
 printf 'PASS: interactive yes installs; no/empty answer preserve the host\n'

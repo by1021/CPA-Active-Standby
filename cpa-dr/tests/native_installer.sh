@@ -8,6 +8,7 @@ cat > "$TMP/run.sh" <<'FIXTURE'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 export MOCK_ROOT=/opt/cpa-native-fixture MOCK_STATE=/var/lib/cpa-native-fixture MOCK_CFG=/etc/cpa-native-fixture
+trap 'rc=$?; printf "native fixture failure at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2; for out in /tmp/status.out /tmp/sshd.log /tmp/stopped-status.out /tmp/stop-control.out /tmp/start-control.out /tmp/restart-control.out; do [[ ! -f $out ]] || tail -30 "$out" >&2; done; grep -E "^(Port|ListenAddress) " "$MOCK_CFG/sshd.conf" >&2 || true; exit "$rc"' ERR
 export MOCK_PORT=18878 MOCK_SYSTEMCTL_LOG=/tmp/systemctl.log
 mkdir -p /fixture/data/auths /etc/systemd/system /usr/local/bin
 printf '{"fixture":true}\n' > /fixture/data/settings.json
@@ -20,10 +21,24 @@ set -Eeuo pipefail
 printf '%s\n' "$*" >> "$MOCK_SYSTEMCTL_LOG"
 [[ ${1:-} != "${MOCK_SYSTEMCTL_FAIL:-}" ]] || { echo 'fixture systemctl failure' >&2; exit 17; }
 case ${1:-} in
-  show) echo fixture;;
+  show)
+    if [[ $* == *--property=LoadState* ]]; then
+      [[ ${MOCK_SYSTEMCTL_QUERY_FAIL:-} != load ]] || exit "${MOCK_SYSTEMCTL_QUERY_RC:-124}"
+      echo loaded
+    else
+      [[ ${MOCK_SYSTEMCTL_QUERY_FAIL:-} != active ]] || exit "${MOCK_SYSTEMCTL_QUERY_RC:-124}"
+      if [[ -n ${MOCK_SYSTEMCTL_ACTIVE_STATE:-} ]]; then echo "$MOCK_SYSTEMCTL_ACTIVE_STATE"
+      elif [[ -f /tmp/native-running && ${2:-} != "${MOCK_SYSTEMCTL_INACTIVE:-}" ]]; then echo active
+      else echo inactive; fi
+    fi;;
   daemon-reload|disable) ;;
-  is-active) [[ -f /tmp/native-running && ${@: -1} != "${MOCK_SYSTEMCTL_INACTIVE:-}" ]];;
-  enable)
+  is-active)
+    [[ ${MOCK_SYSTEMCTL_QUERY_FAIL:-} != active ]] || exit "${MOCK_SYSTEMCTL_QUERY_RC:-124}"
+    [[ -f /tmp/native-running && ${@: -1} != "${MOCK_SYSTEMCTL_INACTIVE:-}" ]];;
+  is-failed)
+    [[ ${MOCK_SYSTEMCTL_QUERY_FAIL:-} != active ]] || exit "${MOCK_SYSTEMCTL_QUERY_RC:-124}"
+    exit 1;;
+  enable|start)
     [[ ! -f /tmp/native-running ]] || exit 0
     mkdir -p /run/cpa-dr-native /run/sshd
     # Execute marker-related ExecStartPre commands from the generated units;
@@ -42,7 +57,7 @@ case ${1:-} in
     printf '%s\n' "$!" > /tmp/native-pids
     nginx -c "$MOCK_CFG/nginx.conf" -g 'daemon off;' > /tmp/nginx.log 2>&1 &
     printf '%s\n' "$!" >> /tmp/native-pids
-    sshd -D -e -f "$MOCK_CFG/sshd.conf" > /tmp/sshd.log 2>&1 &
+    /usr/sbin/sshd -D -e -f "$MOCK_CFG/sshd.conf" > /tmp/sshd.log 2>&1 &
     printf '%s\n' "$!" >> /tmp/native-pids
     for _ in {1..100}; do
       if [[ -S /run/cpa-dr-native/fcgi.sock ]] && curl -fsS "http://127.0.0.1:$MOCK_PORT/healthz" >/dev/null 2>&1; then touch /tmp/native-running; exit 0; fi
@@ -62,7 +77,7 @@ chmod +x /usr/local/bin/systemctl
 ! command -v docker
 export MOCK_SYSTEMCTL_FAIL=enable
 command=$(printf '%q ' bash /fixture/source/start.sh --output "$MOCK_CFG" --state-dir "$MOCK_STATE" --install-root "$MOCK_ROOT" --port "$MOCK_PORT" --ssh-port 22228 --read-only-data --no-install-deps)
-if printf '2\n/fixture/data\nauths\nauths\n1\ny\nsettings.json\nconfig\n2\ny\nusage.sqlite\nusage\n3\nn\ny\n1\n' | script -q -e -c "$command" /dev/null > /tmp/first.out 2>&1; then echo 'failed manager startup was accepted' >&2; exit 1; fi
+if printf '2\n/fixture/data\nauths\nauths\n1\ny\nsettings.json\nconfig\n2\ny\nusage.sqlite\nusage\n3\nn\n1\nn\ny\n' | script -q -e -c "$command" /dev/null > /tmp/first.out 2>&1; then echo 'failed manager startup was accepted' >&2; exit 1; fi
 jq -e '.status=="pending" and .deployment=="native"' "$MOCK_CFG/.env.native.json" >/dev/null
 jq -e '.node_role=="backup" and .enabled==false and .allowed_root=="/fixture/data" and .sources==[{name:"auths",kind:"directory",path:"/fixture/data/auths"},{name:"config",kind:"file",path:"/fixture/data/settings.json"},{name:"usage",kind:"sqlite",path:"/fixture/data/usage.sqlite"}]' "$MOCK_STATE/config.json" >/dev/null
 ! grep -q '服务已启动\|管理员令牌' /tmp/first.out
@@ -103,6 +118,47 @@ bash /fixture/source/start.sh --output "$MOCK_CFG" --no-install-deps > /tmp/post
 [[ $(sha256sum "$MOCK_STATE/config.json") == "$config_before" && $(sha256sum "$MOCK_STATE/admin.token" "$MOCK_STATE/ssh/id_ed25519" "$MOCK_STATE/ssh/ssh_host_ed25519_key") == "$identity" ]]
 printf 'PASS: generated unit startup restores volatile runtime ownership; post-reboot rerun preserves settings and identity\n'
 
+bash /fixture/source/start.sh status --output "$MOCK_CFG" > /tmp/status.out
+grep -q '服务状态：运行中' /tmp/status.out
+grep -q '管理 API：正常' /tmp/status.out
+grep -q '专用 SSH：正常' /tmp/status.out
+if grep -Fq "$TOKEN" /tmp/status.out; then echo 'status leaked token' >&2; exit 1; fi
+for query_kind in active load; do
+for query_rc in 1 124; do
+  export MOCK_SYSTEMCTL_QUERY_FAIL=$query_kind MOCK_SYSTEMCTL_QUERY_RC=$query_rc
+  bash /fixture/source/start.sh status --output "$MOCK_CFG" > /tmp/query-error.out
+  grep -q '服务状态：未知' /tmp/query-error.out || { echo 'native query error reported as stopped, expected unknown' >&2; cat /tmp/query-error.out >&2; exit 1; }
+  before_error_stop=$(grep -c '^stop ' "$MOCK_SYSTEMCTL_LOG")
+  if bash /fixture/source/start.sh stop --yes --output "$MOCK_CFG" > /tmp/query-error-stop.out 2>&1; then echo 'native stop accepted unknown query state' >&2; exit 1; fi
+  [[ $(grep -c '^stop ' "$MOCK_SYSTEMCTL_LOG") == "$before_error_stop" ]]
+done
+done
+unset MOCK_SYSTEMCTL_QUERY_FAIL MOCK_SYSTEMCTL_QUERY_RC
+for active_state in activating deactivating maintenance; do
+  MOCK_SYSTEMCTL_ACTIVE_STATE=$active_state bash /fixture/source/start.sh status --output "$MOCK_CFG" > /tmp/transition-status.out
+  grep -q '服务状态：切换中' /tmp/transition-status.out
+done
+MOCK_SYSTEMCTL_ACTIVE_STATE=failed bash /fixture/source/start.sh status --output "$MOCK_CFG" > /tmp/failed-status.out
+grep -q '异常（单元失败）' /tmp/failed-status.out
+MOCK_SYSTEMCTL_ACTIVE_STATE=invalid-state bash /fixture/source/start.sh status --output "$MOCK_CFG" > /tmp/invalid-status.out
+grep -q '服务状态：未知' /tmp/invalid-status.out
+printf 'PASS: native query errors/timeouts are unknown and block service operations\n'
+before_stop=$(grep -c '^stop ' "$MOCK_SYSTEMCTL_LOG")
+jq '.job.running=true' "$MOCK_STATE/runtime.json" > /tmp/busy.json
+cp /tmp/busy.json "$MOCK_STATE/runtime.json"
+if bash /fixture/source/start.sh stop --yes --output "$MOCK_CFG" > /tmp/busy-stop.out 2>&1; then exit 1; fi
+if bash /fixture/source/start.sh uninstall --yes --output "$MOCK_CFG" > /tmp/busy-uninstall.out 2>&1; then exit 1; fi
+[[ $(grep -c '^stop ' "$MOCK_SYSTEMCTL_LOG") == "$before_stop" ]]
+jq '.job.running=false' "$MOCK_STATE/runtime.json" > /tmp/idle.json
+cp /tmp/idle.json "$MOCK_STATE/runtime.json"
+bash /fixture/source/start.sh stop --yes --output "$MOCK_CFG" > /tmp/stop-control.out
+bash /fixture/source/start.sh status --output "$MOCK_CFG" > /tmp/stopped-status.out
+grep -q '服务状态：已停止' /tmp/stopped-status.out
+bash /fixture/source/start.sh start --yes --output "$MOCK_CFG" > /tmp/start-control.out
+bash /fixture/source/start.sh restart --yes --output "$MOCK_CFG" > /tmp/restart-control.out
+[[ $(sha256sum "$MOCK_STATE/config.json") == "$config_before" && $(sha256sum "$MOCK_STATE/admin.token" "$MOCK_STATE/ssh/id_ed25519" "$MOCK_STATE/ssh/ssh_host_ed25519_key") == "$identity" ]]
+printf 'PASS: native status distinguishes live/stopped units, real API/SSH readiness and guarded start/stop/restart preserve identity\n'
+
 # Non-root dispatch uses sudo rather than trying to read private state or write units.
 cat > /usr/local/bin/sudo <<'SUDO'
 #!/usr/bin/env bash
@@ -113,6 +169,13 @@ chmod +x /usr/local/bin/sudo
 : > /tmp/sudo.log; chmod 666 /tmp/sudo.log
 if setpriv --reuid 65534 --regid 65534 --clear-groups bash /fixture/source/start.sh --output "$MOCK_CFG" --no-install-deps > /tmp/user.out 2>&1; then exit 1; fi
 grep -Fq '/fixture/source/start.sh' /tmp/sudo.log
+grep -Fq -- '--deployment native' /tmp/sudo.log
+: > /tmp/sudo.log
+setpriv --reuid 65534 --regid 65534 --clear-groups bash /fixture/source/start.sh status --output "$MOCK_CFG" > /tmp/user-status.out
+grep -q '未知' /tmp/user-status.out
+[[ ! -s /tmp/sudo.log ]]
+if setpriv --reuid 65534 --regid 65534 --clear-groups bash /fixture/source/start.sh stop --yes --output "$MOCK_CFG" > /tmp/user-control.out 2>&1; then exit 1; fi
+grep -Fq '/fixture/source/start.sh stop' /tmp/sudo.log
 grep -Fq -- '--deployment native' /tmp/sudo.log
 chmod 700 /fixture/data
 : > /tmp/sudo.log
@@ -150,6 +213,27 @@ bash /fixture/source/start.sh --purge --yes --output "$MOCK_CFG" > /tmp/purge.ou
 [[ $(find /fixture/data -type f -exec sha256sum {} + | sort) == "$data_before" ]]
 for file in /etc/systemd/system/cpa-dr-native-*; do [[ ! -e $file ]]; done
 printf 'PASS: native unit ownership/failed-stop guards, uninstall/reinstall/purge preserve original data and unknown files\n'
+
+# Default multi-deployment discovery is exercised entirely inside this container.
+mkdir -p /etc/cpa-dr-native /fixture/dual
+printf '{}\n' > /etc/cpa-dr-native/.env.native.json
+cp /fixture/source/start.sh /fixture/dual/
+cp -a /fixture/source/scripts /fixture/source/lib /fixture/dual/
+printf 'legacy fixture\n' > /fixture/dual/.env
+command=$(printf '%q ' bash /fixture/dual/start.sh)
+printf '2\n0\n' | script -q -e -c "$command" /dev/null > /tmp/dual-menu.out 2>&1
+grep -q '检测到多份部署' /tmp/dual-menu.out
+grep -q '旧部署待确认' /tmp/dual-menu.out
+if bash /fixture/dual/start.sh status > /tmp/dual-status.out 2>&1; then exit 1; fi
+grep -q '多份部署' /tmp/dual-status.out
+bash /fixture/dual/start.sh status --deployment docker > /tmp/dual-docker.out
+grep -q '旧部署待确认' /tmp/dual-docker.out
+printf 'PASS: bare multi-deployment menu selects a target; noninteractive ambiguous status rejects and explicit Docker status stays read-only\n'
+chmod 700 /etc/cpa-dr-native
+setpriv --reuid 65534 --regid 65534 --clear-groups bash /fixture/source/start.sh status > /tmp/private-default-status.out
+grep -q '安装状态：状态未知' /tmp/private-default-status.out
+grep -q '配置目录：/etc/cpa-dr-native' /tmp/private-default-status.out
+printf 'PASS: default discovery retains an inaccessible native candidate as unknown instead of uninstalled\n'
 FIXTURE
 # The container has no host sockets, host ports, systemd or writable source mount.
 docker run --rm --entrypoint bash \

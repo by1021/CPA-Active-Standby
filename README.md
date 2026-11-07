@@ -25,7 +25,7 @@ cd cpa-dr
 bash start.sh
 ```
 
-首次直接运行 `bash start.sh`，依次选择 **主机/备机 → 数据父目录及多项备份内容 → 确认 → Linux 本地或 Docker 部署**。每项可选目录、普通文件或 SQLite；选择会写入服务配置，备份保持停用。也可用 `--data-dir TARGET` 预填父目录，其余选择仍由终端向导完成。
+直接运行 `bash start.sh`，先显示安装及实际运行状态，再选择 **安装/恢复、卸载、详细状态、环境诊断、服务启停/重启或日志**。安装向导依次选择 **主机/备机 → 数据父目录及多项内容 → Linux 本地或 Docker → 可选目录/端口调整 → 完整计划确认**；确认前不安装依赖、不生成配置。每项支持目录、普通文件或 SQLite，新安装备份保持停用。
 
 无人值守安装须明确提供角色、目录和方式；`TARGET` 替换为本机数据父目录，路径可相对该目录：
 
@@ -35,7 +35,19 @@ bash start.sh --role primary --data-dir TARGET --deployment docker \
 # 备机改为 --role backup；Linux 本地改为 --deployment native。
 ```
 
-缺少对应部署方式的依赖时，脚本询问 `[y/N]`，确认后安装并复检；Linux 本地不要求 Docker，非 root 通过 sudo 安装。`--yes` 确认安装，`--no-install-deps` 只检查；已有部署直接重跑，保留配置和密钥。自定义 `--output DIR` 后，重跑与卸载也要指定相同目录。
+缺少对应部署方式的依赖时，脚本询问 `[y/N]`，确认后安装并复检；Linux 本地不要求 Docker，非 root 通过 sudo 安装。`--yes` 确认安装，`--no-install-deps` 只检查。已有部署无参数重跑进入菜单，显式 `install` 恢复安装并保留配置和密钥；旧带参数安装命令兼容。自定义目录使用 `menu --output DIR` 或在具体命令后指定相同目录。
+
+```bash
+bash start.sh status             # 只读状态，不自动启动或提权
+bash start.sh doctor             # 只读依赖、目录、端口与健康诊断
+bash start.sh logs --tail 50     # 本服务最近日志；持续查看加 --follow
+bash start.sh stop              # 确认后停止本服务，不操作 CPA 业务
+bash start.sh start             # 启动已有服务，不构建/创建容器
+bash start.sh restart           # 确认、任务锁检查、停止后启动并验证
+bash start.sh install           # 恢复已有安装；卸载后也使用此命令
+```
+
+状态分别展示管理页面、API、SSH 和备份调度；历史对端记录不等于实时连通，管理健康不等于 CPA 业务正常。缺依赖或权限不足显示未知，不当作未安装。停止、重启及卸载拒绝中断正在执行的任务；非交互服务操作需要显式 `--yes`。
 
 ```bash
 bash start.sh uninstall          # 卸载服务，保留备份、配置和密钥

@@ -6,26 +6,36 @@ umask 077
 script_directory=.
 [[ ${BASH_SOURCE[0]} != */* ]] || script_directory=${BASH_SOURCE[0]%/*}/
 ROOT=$(cd -- "$script_directory" && pwd -P)
+original_args=("$@")
+action='' log_tail=50 log_follow=0 log_options=0
 data='' output='' output_given=0 port='' ssh_port='' role='' deployment='' bind=''
 state_arg='' root_arg='' read_only=0 install_deps=1 assume_yes=0 uninstall=0 purge=0
-existing=0 interactive=0 record='' manifest='' lock_file=''
+existing=0 wizard=0 record='' manifest='' lock_file=''
 source_specs=() source_names=() source_kinds=() source_paths=()
 usage() {
   local line
   while IFS= read -r line; do printf '%s\n' "$line"; done <<'HELP'
-用法：bash start.sh                         # 首次进入中文安装向导
+用法：bash start.sh                         # 中文管理菜单（终端）
+      bash start.sh menu [--output DIR] [--deployment native|docker]
+      bash start.sh install [安装参数 ...]
       bash start.sh --role primary|backup --data-dir TARGET --deployment native|docker
                     [--source 标签:directory|file|sqlite:路径 ...]
                     [--output DIR] [--port 8787] [--ssh-port 2222]
                     [--read-only-data] [--yes | --no-install-deps]
       bash start.sh uninstall [--output DIR] [--deployment native|docker] [--yes]
       bash start.sh uninstall --purge [--output DIR] [--yes]
+      bash start.sh status|doctor [--output DIR] [--deployment native|docker]
+      bash start.sh start|stop|restart [--output DIR] [--yes]
+      bash start.sh logs [--output DIR] [--tail 50] [--follow]
 
-向导顺序：主机/备机 → 数据父目录与备份项目 → 确认 → Linux 本地/Docker。
+向导顺序：选择安装 → 主机/备机 → 数据与项目 → 部署方式 → 完整计划确认。
 路径可相对数据父目录；不指定 --source 时，非交互选择整个父目录。
 备机可指定尚未存在的恢复目标。两端应使用相同标签与类型。
 首次非交互必须明确指定 --role、--data-dir、--deployment。
-已有部署直接重跑，保留页面设置、密钥和备份；冲突参数不覆盖原配置。
+无参数重跑进入菜单；install 恢复已有部署，保留页面设置、密钥和备份。
+旧带参数安装命令兼容；非交互无参数报错，不等待输入。
+status/doctor 只读，不自动提权、安装依赖或创建容器；未知不等于未安装。
+服务管理只控制本服务；停止/重启/卸载拒绝中断正在运行的任务。
 Linux 本地额外支持 --install-root DIR、--state-dir DIR、--bind-host HOST；
 默认配置目录 /etc/cpa-dr-native，服务 /opt/cpa-dr-native，状态 /var/lib/cpa-dr-native。
 Docker 默认配置目录为脚本目录；自定义 --output 后，重跑/卸载也须指定该目录。
@@ -40,6 +50,7 @@ fail() { printf '操作失败：%s\n' "$*" >&2; exit 1; }
 within() { [[ $1 == "$2" || $1 == "${2%/}/"* ]]; }
 yes_answer() { [[ $1 == y || $1 == Y || $1 == yes || $1 == YES ]]; }
 prompt() { read -r -p "$1" "$2" || fail '输入已结束，操作未确认'; }
+set_action() { [[ -z $action || $action == "$1" ]] || fail '每次只能指定一种操作'; action=$1; }
 choose_role() {
   local answer
   printf '\n1. 选择本机角色\n  1) 主机（主服务器）\n  2) 备机（备服务器）\n'
@@ -131,7 +142,7 @@ sources_json() {
 while (($#)); do
   case $1 in
     --data-dir|--output|--port|--ssh-port|--role|--deployment|--source|--state-dir|--install-root|--bind-host)
-      (($# >= 2)) && [[ -n $2 ]] || fail "参数缺少值：$1"
+      if (($# < 2)) || [[ -z $2 ]]; then fail "参数缺少值：$1"; fi
       case $1 in
         --data-dir) data=$2;; --output) output=$2; output_given=1;; --port) port=$2;; --ssh-port) ssh_port=$2;;
         --role) role=$2;; --deployment) deployment=$2;; --source) source_specs+=("$2");;
@@ -140,12 +151,24 @@ while (($#)); do
     --read-only-data) read_only=1; shift;;
     --yes) assume_yes=1; shift;;
     --no-install-deps) install_deps=0; shift;;
-    uninstall|--uninstall) uninstall=1; shift;;
-    --purge) uninstall=1; purge=1; shift;;
+    install|menu|status|doctor|start|stop|restart|logs) set_action "$1"; shift;;
+    uninstall|--uninstall) set_action uninstall; uninstall=1; shift;;
+    --purge) set_action uninstall; uninstall=1; purge=1; shift;;
+    --tail) (($# >= 2)) || fail '--tail 缺少值'; log_tail=$2; log_options=1; shift 2;;
+    --follow) log_follow=1; log_options=1; shift;;
     --help|-h) usage; exit 0;;
     *) fail "未知参数：$1（使用 --help 查看用法）";;
   esac
  done
+if [[ -z $action ]]; then
+  if ((${#original_args[@]})); then action=install
+  elif [[ -t 0 ]]; then action=menu
+  else usage >&2; fail '非交互运行请明确指定操作及参数'; fi
+fi
+if [[ ! $log_tail =~ ^[0-9]{1,4}$ ]] || ((10#$log_tail < 1 || 10#$log_tail > 1000)); then fail '--tail 须为1到1000'; fi
+if [[ $action != logs ]]; then
+  ((log_options == 0)) || fail '--tail/--follow 仅用于 logs'
+fi
 ((assume_yes == 0 || install_deps == 1)) || fail '--yes 与 --no-install-deps 不可同时使用'
 [[ -z $role || $role == primary || $role == backup ]] || fail '--role 须为 primary 或 backup'
 [[ -z $deployment || $deployment == native || $deployment == docker ]] || fail '--deployment 须为 native 或 docker'
@@ -156,6 +179,19 @@ for value in "$port" "$ssh_port"; do
 done
 if ((uninstall)); then
   [[ -z $role && -z $data && -z $port && -z $ssh_port && -z $bind && -z $state_arg && -z $root_arg && $read_only == 0 && ${#source_specs[@]} == 0 ]] || fail '卸载仅接受 --output、--deployment、--purge 和确认/依赖检查选项'
+fi
+# Load trusted functions before any backend-specific dependency or mutation.
+# shellcheck source=scripts/start-dependencies.sh
+source "$ROOT/scripts/start-dependencies.sh"
+# shellcheck source=scripts/start-lifecycle.sh
+source "$ROOT/scripts/start-lifecycle.sh"
+# shellcheck source=scripts/start-manager.sh
+source "$ROOT/scripts/start-manager.sh"
+if [[ $action != install && $action != uninstall ]]; then
+  [[ -z $role && -z $data && -z $port && -z $ssh_port && -z $bind && -z $state_arg && -z $root_arg && $read_only == 0 && ${#source_specs[@]} == 0 ]] || fail '管理操作仅接受目标目录/方式及对应确认或日志选项'
+  [[ $action != menu || ( $assume_yes == 0 && $install_deps == 1 ) ]] || fail 'menu 不接受自动确认或依赖安装选项'
+  cpa_manager_dispatch
+  exit 0
 fi
 
 # Filenames identify the backend even when jq/coreutils have not been installed yet.
@@ -178,7 +214,7 @@ if [[ -n $detected ]]; then
   deployment=$detected; existing=1
 elif ((uninstall)); then fail '未找到安装记录，请核对 --output DIR'
 else
-  if [[ -t 0 && ( -z $role || -z $data || ${#source_specs[@]} == 0 || -z $deployment ) ]]; then interactive=1; fi
+  if [[ -t 0 && ( -z $role || -z $data || ${#source_specs[@]} == 0 || -z $deployment ) ]]; then wizard=1; fi
   if [[ -z $role ]]; then [[ -t 0 ]] || fail '首次非交互运行请提供 --role primary|backup'; choose_role; fi
   if ((${#source_specs[@]} == 0)) && [[ -t 0 ]]; then choose_sources
   else
@@ -187,14 +223,9 @@ else
     ((${#source_specs[@]} > 0)) || source_specs+=(data:directory:.)
   fi
   parse_sources
-  if ((interactive)); then
-    printf '\n3. 确认角色与备份数据\n本机角色：%s\n数据父目录：%s\n' "$role" "$data"
-    for value in "${source_specs[@]}"; do printf '  %s\n' "$value"; done
-    if ((assume_yes == 0)); then prompt '确认上述角色与数据？[y/N] ' answer; yes_answer "$answer" || fail '已取消安装，未生成配置'; fi
-  fi
   if [[ -z $deployment ]]; then
     [[ -t 0 ]] || fail '首次非交互运行请提供 --deployment native|docker'
-    printf '\n4. 选择部署方式\n  1) Linux 本地直接部署（systemd）\n  2) Docker 部署（Compose）\n'
+    printf '\n3. 选择部署方式\n  1) Linux 本地直接部署（systemd）\n  2) Docker 部署（Compose）\n'
     while :; do
       prompt '请选择 [1/2]：' answer
       case $answer in 1|native) deployment=native; break;; 2|docker) deployment=docker; break;; *) printf '请输入 1 或 2。\n';; esac
@@ -203,20 +234,17 @@ else
   fi
 fi
 parse_sources
+if ((wizard)); then cpa_manager_install_options; fi
 if [[ $deployment == docker ]]; then
   [[ -z $state_arg && -z $root_arg && -z $bind ]] || fail '--state-dir、--install-root、--bind-host 仅用于Linux本地部署'
 fi
 # Do not let unrelated exports override either the private file or native initializer.
 unset ADMIN_TOKEN CPA_DATA_PATH STATE_PATH PORT SSH_PORT BIND_HOST SSH_BIND_HOST DATA_ACCESS
 unset CPA_ADMIN_TOKEN CPA_ALLOWED_ROOT CPA_STATE_DIR CPA_ROOT
-# shellcheck source=scripts/start-dependencies.sh
-source "$ROOT/scripts/start-dependencies.sh"
-# shellcheck source=scripts/start-lifecycle.sh
-source "$ROOT/scripts/start-lifecycle.sh"
 dependency_mode=$deployment
 ((uninstall == 0)) || dependency_mode="uninstall-$deployment"
 if ((uninstall)); then cpa_start_ensure_dependencies 0 0 "$dependency_mode"
-else cpa_start_ensure_dependencies "$install_deps" "$assume_yes" "$dependency_mode"; fi
+else cpa_manager_install_plan; cpa_start_ensure_dependencies "$install_deps" "$assume_yes" "$dependency_mode"; fi
 if [[ $deployment == native && $EUID != 0 ]]; then cpa_start_elevate_native; fi
 cpa_start_no_links "$output"
 output=$(realpath -m -- "$output")

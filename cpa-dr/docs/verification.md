@@ -128,3 +128,37 @@ PASS: config/role/SSH keys persist across container restart
 [首轮独立复审](review-installer-workflow-initial.md)发现1项P1：`/run` 在重启后清空，而原生单元未恢复目录所有权标记，导致重跑与卸载报错。新增原生回归先在未修实现上退出1，报 `runtime ownership marker not restored after simulated reboot`；修复让FastCGI/SSH的启动前命令从持久状态恢复权限0600的安装ID。补测卸载后运行目录丢失又发现 `nginx -t` 在systemd启动前需要PID父目录，重装入口仅在目录缺失且原有路径/所有权检查通过时重建。保持原有所有权和单元摘要保护。
 
 接力复跑入口、依赖、部署、静态检查、隔离Docker/非root/native链路及核心/服务/CGI/页面回归；最终普通独立复审原样结论见[安装向导复审](review-installer-workflow.md)。原生重启检查是模拟生命周期与真实文件命令组合，不是宿主重启或真实systemd启动凭证。
+
+## 管理菜单、只读诊断与服务管理（2026-11-06）
+
+用户确认预览后实现，现行需求见 [安装入口需求](requirements/installer-manager.md)，验收见 [管理入口设计](installer-manager-design.md)。未初始化 `.ai_state`，以下为普通本地检查，不是正式 Athena sprint/ship 门禁或真实服务器部署凭证。
+
+| 检查 | 仓库根目录命令 | 结果 |
+|---|---|---|
+| 菜单与管理回归 | `athena run -- bash cpa-dr/tests/manager.sh` | 无参数PTY菜单、无效输入/返回/退出、失败刷新、未安装项、非交互分发、未知/停止/异常目标、不可遍历祖先目录、只读无配置/容器副作用、秘密隐藏、日志参数、运行任务/占用锁/符号链接拒绝、停止失败；卸载拒绝异源挂载/标签、多容器及查询失败；无容器时pending/ready/uninstalled清理通过 |
+| 安装与依赖回归 | `athena run -- bash -c 'bash cpa-dr/tests/start.sh && bash cpa-dr/tests/dependencies.sh && bash cpa-dr/tests/deployment.sh'` | 新顺序、完整计划、默认与自定义目录/端口、取消无写入、原角色/来源/身份保留；缺curl/timeout包映射及原apt/dnf/yum、sudo、失败保护与systemd dry-run通过 |
+| root 真Docker | `athena run -- bash cpa-dr/tests/compose_smoke.sh` | 独立临时项目安装、只读状态、停止/启动/重启及管理API/SSH就绪，卸载/重装/清除；宿主runtime可读时普通卸载及purge均保护同标签异源挂载的真实容器；身份和原始数据保留 |
+| 非root真Docker | `athena run -- bash cpa-dr/tests/docker_user.sh` | 进程降UID/GID，root私有JSON/令牌通过已有容器读取；运行容器内任务锁、停止状态、启动/重启不创建辅助容器；卸载/恢复及拒绝sudo清理前保护通过 |
+| 原生隔离验证 | `athena run -- bash cpa-dr/tests/native_installer.sh` | 独立无宿主socket/无发布端口容器：真实Nginx/CGI/SSH/安装器，管理/API/SSH分别验证；启停/重启、运行任务拒绝、身份保留、多部署选择、非root只读不提权和写操作sudo派发通过 |
+| 业务回归 | `athena run -- bash -c 'bash cpa-dr/tests/core.sh && bash cpa-dr/tests/service.sh && bash cpa-dr/tests/api.sh && node --test cpa-dr/tests/browser/ui.test.cjs'` | 数据核心、主备保护与交接、CGI及5项页面测试通过；未改业务实现 |
+| 静态检查 | `athena run -- shellcheck --severity=warning -x cpa-dr/start.sh cpa-dr/scripts/*.sh cpa-dr/tests/*.sh` | ShellCheck、逐文件bash -n及git diff --check通过 |
+
+先红后绿：新增管理测试初次报“未知参数：status”。新增root Docker启动测试复现任务锁阻塞容器init，日志报“另一个备份/恢复/配置任务正在运行”；修复为停止完成后释放两把任务锁，再启动，防止初始化死锁及测试启动进程继承锁。原生SSH检查发现旧模拟器用相对路径启动sshd，stderr为“sshd re-exec requires execution with an absolute path”；改为真实 `/usr/sbin/sshd` 后，握手和真实CGI验证通过。
+
+CLI依据已用本机 `docker start/stop/ps/inspect/logs --help` 与 `systemctl --help` 核对；Engine 26.1.5、Compose 2.26.1。原生 **systemctl和sudo策略仍是测试模拟器**，真实宿主systemd运行、发行版软件源/账户策略及只读沙箱约束待目标环境验证。没有安装/卸载宿主服务或修改真实CPA/Cloudflare，测试只操作独立临时项目并清理。
+
+普通独立源码审查原样结果见 [管理入口审查](review-installer-manager.md)。
+
+### 独立复审修复与验证记录
+
+[初轮审查](review-installer-manager-initial.md)发现1项P1及2项P2，原样保留：
+
+- Docker卸载曾在宿主`runtime.json`可读时跳过容器归属校验。新增红测报`accepted invalid operation: uninstall`；修复为所有UID及记录状态都核对现存容器标签与挂载，缺容器的清理仍允许。补齐Compose模拟器，保证忙碌卸载测试实际进入任务锁而非在配置检查阶段提前失败；真实隔离Compose异源挂载容器在卸载/清理失败后仍运行。
+- 普通用户遇到不可遍历的祖先目录曾误报未安装。新增降UID红测报`inaccessible ancestor reported as uninstalled, expected unknown`；修复为遍历检查所有祖先，显示未知且不提权。
+- 首轮静态合并命令未正确传播ShellCheck失败，旧`manager-final-static.log`含SC2034，**不是静态通过证据**。修正健康等待循环，并用`set -e`及外层`pipefail`复跑；新增测试的SC2209也已修正，最终ShellCheck、逐文件`bash -n`和`git diff --check`逐项通过。
+- 非root连续生命周期复跑发现卸载任务锁忙；隔离检查进一步发现Bash子shell会关闭coprocess描述符，原释放逻辑没有发出`RELEASE`，依赖stdin EOF。新增单元红测报`guard release must send RELEASE explicitly, not subshell/EOF`；父shell直接发送又复现退出141（远端停止后的SIGPIPE）。修复为父shell复制描述符、子shell用副本显式发送，既收到释放消息也隔离SIGPIPE；两种情况都有回归。保留锁忙时拒绝中断的行为，不靠重试放行或放松任务保护。
+- 真Docker的空闲scheduler每秒短暂持锁，即使备份停用也可能正确拒绝一次启停。成功链路的测试helper最多3次重试**写入前的锁拒绝**，每次验证容器ID未变、任务空闲且调度停用；归属、sudo、停止失败及SIGPIPE不重试。专门的忙碌/锁占用/符号链接负例保持单次拒绝断言；生产入口仍不自动重试或中断任务。
+- [第二轮审查](review-installer-manager-second.md)补充P2：native将`is-active`/`is-failed`查询失败当作已停止。新增红测报`native query error reported as stopped, expected unknown`；改用`systemctl show --property=ActiveState --value`，查询错误/超时及未识别状态显示未知并阻止操作；启动/停止/维护显示切换中，failed单独显示异常。依据本机`/usr/share/man/man1/systemctl.1.gz`的机器可读show说明及ACTIVE状态表，非真实宿主systemd运行凭证。
+- 默认探测保留已存在但不可遍历的native配置目录作为未知候选，不因隐藏记录而默认误报未安装；隔离非root默认status补测该分支。
+
+最终普通检查日志位于本机`.runtime/`：`manager-regression-final.log`、`manager-compose-final.log`、`manager-native-final.log`、`manager-docker-user-final.log`、`manager-backend-verified.log`及`manager-static-verified.log`。它们仅是本地复验证据，不是已初始化状态库的正式门禁凭证。
