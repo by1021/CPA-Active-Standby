@@ -13,6 +13,8 @@ source "$CPA_ROOT/lib/common.sh"
 source "$CPA_ROOT/lib/snapshots.sh"
 # shellcheck source=../lib/service.sh
 source "$CPA_ROOT/lib/service.sh"
+# shellcheck source=../lib/enrollment.sh
+source "$CPA_ROOT/lib/enrollment.sh"
 command=${1:-help}; shift || true
 if [[ $command == init ]]; then
     if [[ ${1:-} == --allowed-root ]]; then export CPA_ALLOWED_ROOT; CPA_ALLOWED_ROOT=$(realpath -ms -- "${2:?}"); shift 2; fi
@@ -25,6 +27,7 @@ if [[ $command == init ]]; then
 fi
 [[ -f $CPA_STATE_DIR/config.json && -f $CPA_STATE_DIR/runtime.json ]] || { cpa_fail '请先执行 init 初始化独立的原生备份状态目录'; exit 1; }
 case "$command" in
+    enrollment) cpa_enrollment_cli "$@" ;;
     status) cpa_status ;;
     pairing) cpa_pairing ;;
     snapshots) cpa_snapshot_list | jq '{snapshots:.}' ;;

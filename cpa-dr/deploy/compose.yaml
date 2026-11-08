@@ -1,0 +1,39 @@
+# Canonical Compose model. Use --project-directory pointing at the cpa-dr service root.
+services:
+  cpa-dr:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: cpa-dr:native
+    restart: unless-stopped
+    environment:
+      CPA_ADMIN_TOKEN: ${ADMIN_TOKEN:?Run bash scripts/setup.sh --data-dir TARGET first}
+    ports:
+      - target: 8787
+        published: "${PORT:-8787}"
+        host_ip: "${BIND_HOST:-127.0.0.1}"
+        protocol: tcp
+      - target: 22
+        published: "${SSH_PORT:-2222}"
+        host_ip: "${SSH_BIND_HOST:-127.0.0.1}"
+        protocol: tcp
+    volumes:
+      - "${STATE_PATH:-./state-native}:/state:rw"
+      - "${CPA_DATA_PATH:?Set the actual CPA parent data directory}:/data:${DATA_ACCESS:-rw}"
+    read_only: true
+    tmpfs:
+      - /run:size=32m,mode=0755
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+      - SYS_CHROOT
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 60s

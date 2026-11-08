@@ -25,6 +25,9 @@ id_ed25519
 # Backups, logs, and live databases
 backup/
 backups/
+# User-facing backup documentation is source, not live backup data.
+!/docs/backup/
+!/docs/backup/**
 snapshots/
 logs/
 *.log

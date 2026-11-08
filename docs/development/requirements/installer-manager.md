@@ -25,4 +25,4 @@ status: final
 - 普通卸载保留配置、密钥与备份，清理需 PURGE 或显式 --yes；原始数据和无关服务保留。
 - 帮助和 README 给出交互与非交互用法，测试覆盖两种部署并说明真实宿主尚未验证的边界。
 
-实现与逐项验收见 [设计](../installer-manager-design.md)。
+实现与逐项验收见 [设计](../designs/installer-manager-design.md)。

@@ -38,6 +38,7 @@ route=${PATH_INFO:-${REQUEST_URI:-}}
 route=${route%%\?*}
 status=200
 args=()
+projection='.'
 case "$method $route" in
     'GET /api/status') args=(status) ;;
     'GET /api/config') args=(config get) ;;
@@ -48,6 +49,18 @@ case "$method $route" in
         jq -r .public_key "$temp/body.json" > "$temp/public.key"
         args=(trust-key "$temp/public.key") ;;
     'GET /api/snapshots') args=(snapshots) ;;
+    'GET /api/enrollment')
+        args=(enrollment list)
+        projection='{invites:[.invites[]|{invite_id,status,expires_at,backup_host,backup_port,deployment,node_id,snapshot_id}]}' ;;
+    'POST /api/enrollment')
+        args=(enrollment create "$temp/body.json")
+        # The CLI also returns private installer data. The browser receives only
+        # its explicitly requested one-time command, never a second key export.
+        projection='{invite_id,command,expires_at}' ;;
+    'POST /api/enrollment/revoke')
+        jq -e '(.invite_id|type)=="string" and (.invite_id|test("^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$"))' "$temp/body.json" >/dev/null || error 400 '邀请 ID 非法'
+        args=(enrollment revoke "$(jq -r .invite_id "$temp/body.json")")
+        projection='{invite_id,revoked}' ;;
     GET\ /api/jobs/*)
         id=${route#/api/jobs/}
         [[ $id =~ ^[A-Za-z0-9_-]{1,128}$ ]] || error 404 '作业不存在'
@@ -62,6 +75,7 @@ case "$method $route" in
 esac
 if output=$("${CLI[@]}" "${args[@]}" 2> "$temp/error.log"); then
     jq -e . <<< "$output" >/dev/null 2>&1 || error 500 '原生命令返回无效JSON'
+    output=$(jq -c "$projection" <<< "$output") || error 500 '原生命令返回无效接口结构'
     emit "$status" "$output"
 else
     code=$?

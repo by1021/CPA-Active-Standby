@@ -17,3 +17,8 @@ logs
 .runtime
 .venv
 data
+
+# Public deployment template is packaged; actual .env files remain excluded.
+!.env.example
+!deploy/.env.example
+docs

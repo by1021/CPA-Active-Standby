@@ -87,24 +87,8 @@ cpa_status() {
 cpa_peer_status() {
     cpa_status | jq '{node_id,node_role,phase,epoch,latest_received,handover:(.handover//null)}'
 }
-cpa_ssh() {
-    local operation=$1; shift
-    local host user port identity known command arg
-    host=$(jq -r '.peer.host' "$CPA_STATE_DIR/config.json")
-    user=$(jq -r '.peer.user' "$CPA_STATE_DIR/config.json")
-    port=$(jq -r '.peer.port' "$CPA_STATE_DIR/config.json")
-    identity=$(jq -r '.peer.identity_file' "$CPA_STATE_DIR/config.json")
-    known=$(jq -r '.peer.known_hosts_file' "$CPA_STATE_DIR/config.json")
-    [[ $host =~ ^[A-Za-z0-9:][A-Za-z0-9_.:-]*$ && $user =~ ^[A-Za-z_][A-Za-z0-9_-]*\$?$ && $port =~ ^[0-9]+$ ]] || { cpa_fail '对端 SSH 地址配置不完整'; return 1; }
-    [[ -f $identity && -f $known ]] || { cpa_fail 'SSH 私钥或 known_hosts 尚未配置'; return 1; }
-    [[ $operation =~ ^(status|receive|archive|handover|baseline|commit)$ ]] || { cpa_fail 'SSH 操作未登记'; return 1; }
-    command=$operation
-    for arg in "$@"; do
-        [[ $arg =~ ^[A-Za-z0-9_-]+$ ]] || { cpa_fail 'SSH 参数非法'; return 1; }
-        command+=" $arg"
-    done
-    timeout 300 ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o "UserKnownHostsFile=$known" -i "$identity" -p "$port" "$user@$host" "$command"
-}
+# shellcheck source=transport.sh
+source "$CPA_ROOT/lib/transport.sh"
 cpa_check_peer() {
     local remote id role other
     remote=$(cpa_ssh status) || { cpa_state_update '.peer.reachable=false|.peer.last_error="SSH连接失败：检查公钥、端口、known_hosts与对端服务"' || true; cpa_fail 'SSH 连接失败；核对对端公钥、端口与主机指纹'; return 1; }

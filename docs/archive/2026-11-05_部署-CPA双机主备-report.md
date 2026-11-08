@@ -1,3 +1,5 @@
+> **历史资料**：原始方案留档，不是当前服务的安装步骤。当前操作入口见 [备份恢复文档](../backup/README.md)。
+
 # CPA 双机主备：轻量自动备份与恢复方案
 
 > 日期：2026-11-05。范围：方案与实施验收说明，不在本轮安装服务器脚本或修改线上 Worker。
@@ -155,8 +157,8 @@ CPA 存在后台认证刷新逻辑，待机不接流量也可能修改认证文�
 
 ## 8. 相关文档与依据
 
-- [中文对照操作手册](2026-11-05_部署-CPA双机主备-Worker-KV操作手册-中文版.md)：现有入口配置及应急流程。
-- [简明操作手册](2026-11-05_部署-CPA双机主备-Worker-KV操作手册.md)：原版配置说明。
+- [中文对照操作手册](../cloudflare/2026-11-05_部署-CPA双机主备-Worker-KV操作手册-中文版.md)：现有入口配置及应急流程。
+- [简明操作手册](../cloudflare/2026-11-05_部署-CPA双机主备-Worker-KV操作手册.md)：原版配置说明。
 - [1] [rsync 官方手册](https://rsync.samba.org/ftp/rsync/rsync.1)：传输、备份目录、删除及退出状态；它不负责应用事务一致性。
 - [2] [Cloudflare KV 一致性](https://developers.cloudflare.com/kv/concepts/how-kv-works/)：KV 不是即时分布式锁。
 - [3] CPA 官方源码取样提交 `585f97deac9aa57c700301221fb1a7085e1827cc`：[文件保存](https://github.com/router-for-me/CLIProxyAPI/blob/585f97deac9aa57c700301221fb1a7085e1827cc/sdk/auth/filestore.go)、[后台刷新](https://github.com/router-for-me/CLIProxyAPI/blob/585f97deac9aa57c700301221fb1a7085e1827cc/sdk/cliproxy/auth/auto_refresh_loop.go)。这是源码依据，不代表两台服务器运行相同版本。

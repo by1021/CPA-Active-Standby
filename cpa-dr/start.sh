@@ -9,6 +9,8 @@ ROOT=$(cd -- "$script_directory" && pwd -P)
 original_args=("$@")
 action='' log_tail=50 log_follow=0 log_options=0
 data='' output='' output_given=0 port='' ssh_port='' role='' deployment='' bind=''
+ssh_bind='' invite_file='' invite_payload='' primary_host='' primary_port='' backup_host='' backup_port=''
+backup_data='' backup_deployment='' backup_output='' backup_bind='' invite_ttl=1800 invite_auto=1
 state_arg='' root_arg='' read_only=0 install_deps=1 assume_yes=0 uninstall=0 purge=0
 existing=0 wizard=0 record='' manifest='' lock_file=''
 source_specs=() source_names=() source_kinds=() source_paths=()
@@ -18,6 +20,11 @@ usage() {
 用法：bash start.sh                         # 中文管理菜单（终端）
       bash start.sh menu [--output DIR] [--deployment native|docker]
       bash start.sh install [安装参数 ...]
+      bash start.sh generate-backup-command [--primary-host HOST --backup-host HOST]
+                    [--backup-data-dir TARGET --backup-deployment native|docker]
+                    [--backup-output DIR --backup-bind-host HOST --ttl 1800 --yes]
+      bash start.sh join --invite-file FILE [--yes]
+      bash start.sh configure-ssh --ssh-bind-host HOST [--output DIR --yes]
       bash start.sh --role primary|backup --data-dir TARGET --deployment native|docker
                     [--source 标签:directory|file|sqlite:路径 ...]
                     [--output DIR] [--port 8787] [--ssh-port 2222]
@@ -141,17 +148,23 @@ sources_json() {
 }
 while (($#)); do
   case $1 in
-    --data-dir|--output|--port|--ssh-port|--role|--deployment|--source|--state-dir|--install-root|--bind-host)
+    --data-dir|--output|--port|--ssh-port|--role|--deployment|--source|--state-dir|--install-root|--bind-host|--ssh-bind-host|--invite-file|--invite|--primary-host|--primary-port|--backup-host|--backup-port|--backup-data-dir|--backup-deployment|--backup-output|--backup-bind-host|--ttl)
       if (($# < 2)) || [[ -z $2 ]]; then fail "参数缺少值：$1"; fi
       case $1 in
         --data-dir) data=$2;; --output) output=$2; output_given=1;; --port) port=$2;; --ssh-port) ssh_port=$2;;
         --role) role=$2;; --deployment) deployment=$2;; --source) source_specs+=("$2");;
         --state-dir) state_arg=$2;; --install-root) root_arg=$2;; --bind-host) bind=$2;;
+        --ssh-bind-host) ssh_bind=$2;; --invite-file) invite_file=$2;; --invite) invite_payload=$2;;
+        --primary-host) primary_host=$2;; --primary-port) primary_port=$2;;
+        --backup-host) backup_host=$2;; --backup-port) backup_port=$2;;
+        --backup-data-dir) backup_data=$2;; --backup-deployment) backup_deployment=$2;;
+        --backup-output) backup_output=$2;; --backup-bind-host) backup_bind=$2;; --ttl) invite_ttl=$2;;
       esac; shift 2;;
     --read-only-data) read_only=1; shift;;
     --yes) assume_yes=1; shift;;
+    --no-auto-enable) invite_auto=0; shift;;
     --no-install-deps) install_deps=0; shift;;
-    install|menu|status|doctor|start|stop|restart|logs) set_action "$1"; shift;;
+    install|menu|status|doctor|start|stop|restart|logs|generate-backup-command|join|configure-ssh) set_action "$1"; shift;;
     uninstall|--uninstall) set_action uninstall; uninstall=1; shift;;
     --purge) set_action uninstall; uninstall=1; purge=1; shift;;
     --tail) (($# >= 2)) || fail '--tail 缺少值'; log_tail=$2; log_options=1; shift 2;;
@@ -172,23 +185,32 @@ fi
 ((assume_yes == 0 || install_deps == 1)) || fail '--yes 与 --no-install-deps 不可同时使用'
 [[ -z $role || $role == primary || $role == backup ]] || fail '--role 须为 primary 或 backup'
 [[ -z $deployment || $deployment == native || $deployment == docker ]] || fail '--deployment 须为 native 或 docker'
-for value in "$port" "$ssh_port"; do
+for value in "$port" "$ssh_port" "$primary_port" "$backup_port"; do
   [[ -n $value ]] || continue
   [[ $value =~ ^[0-9]+$ && ${#value} -le 5 ]] || fail '端口须在1到65535之间'
   ((10#$value >= 1 && 10#$value <= 65535)) || fail '端口须在1到65535之间'
 done
+[[ -z $ssh_bind || $ssh_bind =~ ^[A-Za-z0-9:][A-Za-z0-9_.:-]{0,252}$ ]] || fail 'SSH监听地址含非法字符'
 if ((uninstall)); then
-  [[ -z $role && -z $data && -z $port && -z $ssh_port && -z $bind && -z $state_arg && -z $root_arg && $read_only == 0 && ${#source_specs[@]} == 0 ]] || fail '卸载仅接受 --output、--deployment、--purge 和确认/依赖检查选项'
+  [[ -z $role && -z $data && -z $port && -z $ssh_port && -z $bind && -z $ssh_bind && -z $state_arg && -z $root_arg && $read_only == 0 && ${#source_specs[@]} == 0 ]] || fail '卸载仅接受 --output、--deployment、--purge 和确认/依赖检查选项'
 fi
 # Load trusted functions before any backend-specific dependency or mutation.
-# shellcheck source=scripts/start-dependencies.sh
+# shellcheck source=scripts/install/start-dependencies.sh
 source "$ROOT/scripts/start-dependencies.sh"
-# shellcheck source=scripts/start-lifecycle.sh
+# shellcheck source=scripts/install/start-lifecycle.sh
 source "$ROOT/scripts/start-lifecycle.sh"
-# shellcheck source=scripts/start-manager.sh
+# shellcheck source=scripts/install/start-manager.sh
 source "$ROOT/scripts/start-manager.sh"
+# shellcheck source=scripts/install/invitation.sh
+source "$ROOT/scripts/install/invitation.sh"
+case $action in
+  join) source "$ROOT/scripts/install/join.sh"; cpa_join_main; exit 0;;
+  generate-backup-command) cpa_generate_invitation; exit 0;;
+  configure-ssh) cpa_configure_ssh; exit 0;;
+esac
+[[ -z $invite_file && -z $invite_payload && -z $primary_host && -z $primary_port && -z $backup_host && -z $backup_port && -z $backup_data && -z $backup_deployment && -z $backup_output && -z $backup_bind && $invite_ttl == 1800 && $invite_auto == 1 ]] || fail '邀请参数仅用于 join 或 generate-backup-command'
 if [[ $action != install && $action != uninstall ]]; then
-  [[ -z $role && -z $data && -z $port && -z $ssh_port && -z $bind && -z $state_arg && -z $root_arg && $read_only == 0 && ${#source_specs[@]} == 0 ]] || fail '管理操作仅接受目标目录/方式及对应确认或日志选项'
+  [[ -z $role && -z $data && -z $port && -z $ssh_port && -z $bind && -z $ssh_bind && -z $state_arg && -z $root_arg && $read_only == 0 && ${#source_specs[@]} == 0 ]] || fail '管理操作仅接受目标目录/方式及对应确认或日志选项'
   [[ $action != menu || ( $assume_yes == 0 && $install_deps == 1 ) ]] || fail 'menu 不接受自动确认或依赖安装选项'
   cpa_manager_dispatch
   exit 0
@@ -280,6 +302,7 @@ else
   setup_args=(--data-dir "$data" --output "$output")
   [[ -z $port ]] || setup_args+=(--port "$port")
   [[ -z $ssh_port ]] || setup_args+=(--ssh-port "$ssh_port")
+  [[ -z $ssh_bind ]] || setup_args+=(--ssh-bind-host "$ssh_bind")
   ((read_only == 0)) || setup_args+=(--read-only-data)
   bash "$ROOT/scripts/setup.sh" "${setup_args[@]}" >/dev/null
   fresh=1
@@ -340,6 +363,10 @@ for key in PORT SSH_PORT; do
   requested=$port; [[ $key != SSH_PORT ]] || requested=$ssh_port
   if [[ -n $requested ]] && ((10#$requested != 10#$configured)); then fail "$key 与已有 .env 冲突；修改监听请明确编辑 .env 后重跑"; fi
 done
+if [[ -n $ssh_bind ]]; then
+  configured_ssh_bind=$(jq -r '.services["cpa-dr"].ports[] | select(.target == 22) | .host_ip//"0.0.0.0"' <<< "$model")
+  [[ $configured_ssh_bind == "$ssh_bind" ]] || fail 'SSH监听与已有配置冲突；使用 configure-ssh --ssh-bind-host 修改'
+fi
 access=$(config_value DATA_ACCESS) || fail '.env 缺少 DATA_ACCESS'
 [[ $access == rw || $access == ro ]] || fail 'DATA_ACCESS 须为 rw 或 ro'
 if ((read_only)) && [[ $access != ro ]]; then fail '--read-only-data 与已有 .env 冲突'; fi
@@ -370,3 +397,4 @@ address=$("${compose[@]}" port cpa-dr 8787) || fail '读取实际管理端口失
 printf '\n服务已启动（仅管理服务健康，不代表 CPA 业务就绪）。\n部署方式：Docker\n管理地址：http://%s\n配置文件：%s\n管理员令牌：%s\n本机 SSH 公钥：\n' "$address" "$envfile" "$token"
 cat -- "$state/ssh/id_ed25519.pub"
 printf '%s\n' '已保留/初始化角色与数据设置；新安装备份未启用。交换公钥并核对指纹后在页面启用。'
+printf '%s\n' '主机可运行 bash start.sh generate-backup-command 生成备机安装邀请。'

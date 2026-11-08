@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Invoked only by the forced SSH dispatcher after authentication identity lookup.
+set -Eeuo pipefail
+umask 077
+ROOT=$(cd -- "$(dirname -- "$(realpath -e -- "${BASH_SOURCE[0]}")")/.." && pwd)
+STATE=${CPA_STATE_DIR:-/state}
+[[ ${1:-} == --state-dir ]] && { STATE=${2:?}; shift 2; }
+[[ ${1:-} == --invite-id ]] || exit 1
+ID=${2:?}; shift 2
+[[ $ID =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$ && $# -ge 1 && $# -le 2 && -n ${CPA_ENROLL_AUTH_KEY:-} ]] || exit 1
+OP=$1; shift
+case $OP in bundle|register|status|complete|probe|activate|deactivate) ;; *) exit 1;; esac
+TMP=$(mktemp -d)
+trap 'rm -rf -- "$TMP"' EXIT
+if [[ $OP == register ]]; then
+  head -c 65537 > "$TMP/request.json"
+  [[ $(stat -c %s "$TMP/request.json") -le 65536 ]] || { echo '配对请求超过64KiB' >&2; exit 1; }
+else printf '{}\n' > "$TMP/request.json"; fi
+"$ROOT/bin/cpa-dr" --state-dir "$STATE" enrollment _rpc "$ID" "$OP" "$TMP/request.json" "${1:-}"

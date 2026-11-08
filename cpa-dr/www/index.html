@@ -85,6 +85,13 @@
           <article class="card"><div class="card-heading"><div><h2><span class="section-number">04</span> CPA 启停方式</h2><p>仅用于确认后的恢复／交接。普通备份不停止主 CPA。</p></div></div><div class="form-grid"><div class="field"><label for="service-driver">管理方式</label><select id="service-driver"><option value="none">人工启停 · 默认</option><option value="docker">Docker 容器</option><option value="systemd">systemd 服务</option></select></div><div class="field"><label for="service-name">指定容器或服务名</label><input id="service-name" placeholder="TARGET"></div><div class="field"><label for="service-timeout">启停超时（秒）</label><input id="service-timeout" type="number" min="1" max="600" value="60" required></div></div><div class="inline-note">默认 Docker 部署不提供宿主机 Docker socket 或 systemd 权限。选择管理驱动前，需按部署文档配置执行环境；人工方式须真实停止 CPA 后再确认。</div></article>
           <p id="config-error" class="form-error" role="alert"></p><div class="form-actions"><p>先保存并测试双端配对，再启用定时任务。</p><button id="save-config" class="button primary" type="submit">保存配置</button><button id="save-enable" class="button" type="button">保存、配对并启动</button></div>
         </form>
+        <article class="card enrollment-card" id="enrollment-card">
+          <div class="card-heading"><div><h2><span class="section-number">05</span> 一键添加备机</h2><p>主机生成一次性安装命令，备机执行后自动安装、配对并校验首份备份。不会安装 CPA 业务或切换 Cloudflare。</p></div><button id="enrollment-open" class="button primary" type="button">生成备机安装命令</button></div>
+          <p class="inline-note" id="enrollment-help">先保存主机角色和备份内容，保持定时任务停用；专用 SSH 必须已监听双方可达地址。安装命令含临时凭据，仅交给备机管理员。</p>
+          <div class="card-heading"><h3>安装邀请与首备结果</h3><button id="enrollment-refresh" class="button small" type="button">刷新邀请</button></div>
+          <div id="enrollment-list" class="enrollment-list" aria-live="polite"><p class="empty-state compact-empty">点击刷新查看本机安装邀请。</p></div>
+          <p class="form-error" id="enrollment-list-error" role="alert"></p>
+        </article>
       </section>
 
       <section id="panel-snapshots" class="panel" hidden>
@@ -101,6 +108,29 @@
       <footer class="workspace-footer"><span>CPA DR · 主备数据管理</span><span>文件在线副本为尽力一致；历史快照不等同独立异地灾备。</span></footer>
     </main>
   </div>
+  <dialog id="enrollment-dialog" class="action-dialog enrollment-dialog" aria-labelledby="enrollment-title">
+    <form id="enrollment-form">
+      <div class="dialog-heading"><div><p class="eyebrow">ONE-TIME INSTALLATION</p><h2 id="enrollment-title">生成备机安装命令</h2></div><button id="enrollment-close" class="icon-button" type="button" aria-label="关闭安装邀请">×</button></div>
+      <p>以下地址是两台服务器之间实际可达的专用 SSH 地址，不是管理网页或 CPA 业务地址。默认不修改防火墙。</p>
+      <div class="form-grid">
+        <div class="field"><label for="enrollment-primary-host">主机连接地址（备机访问）</label><input id="enrollment-primary-host" placeholder="HOST" autocomplete="off" required></div>
+        <div class="field"><label for="enrollment-primary-port">主机专用 SSH 端口</label><input id="enrollment-primary-port" type="number" min="1" max="65535" value="2222" required></div>
+        <div class="field"><label for="enrollment-backup-host">备机连接地址（主机访问）</label><input id="enrollment-backup-host" placeholder="HOST" autocomplete="off" required></div>
+        <div class="field"><label for="enrollment-backup-port">备机专用 SSH 端口</label><input id="enrollment-backup-port" type="number" min="1" max="65535" value="2222" required></div>
+        <div class="field"><label for="enrollment-backup-bind">备机本地 SSH 监听地址</label><input id="enrollment-backup-bind" placeholder="HOST（备机本地内网 IP）" autocomplete="off" required></div>
+        <div class="field"><label for="enrollment-data-dir">备机数据父目录</label><input id="enrollment-data-dir" placeholder="TARGET" autocomplete="off" required></div>
+        <div class="field"><label for="enrollment-deployment">备机部署方式</label><select id="enrollment-deployment"><option value="docker">Docker</option><option value="native">Linux 本地（systemd）</option></select></div>
+        <div class="field"><label for="enrollment-output">备机配置目录（可选）</label><input id="enrollment-output" placeholder="留空使用对应部署方式默认值" autocomplete="off"></div>
+        <div class="field"><label for="enrollment-ttl">邀请有效期（秒）</label><input id="enrollment-ttl" type="number" min="60" max="86400" value="1800" required></div>
+        <label class="switch-label"><input id="enrollment-auto-enable" type="checkbox" checked><span>首备校验成功后启用定时任务</span></label>
+      </div>
+      <div class="plan-box"><strong>继承已保存的主机配置</strong><pre id="enrollment-preview"></pre></div>
+      <label class="enrollment-confirm"><input id="enrollment-confirm" type="checkbox" required><span>我已核对地址、目录和部署方式；执行生成命令将确认备机的依赖安装、服务部署及自动配对。命令仅交给该备机管理员。</span></label>
+      <p id="enrollment-error" class="form-error" role="alert"></p>
+      <div class="dialog-actions"><button id="enrollment-cancel" class="button" type="button">关闭</button><button id="enrollment-create" class="button primary" type="submit">确认生成安装命令</button></div>
+      <section id="enrollment-result" class="enrollment-result" hidden><h3>在备机执行此命令</h3><p id="enrollment-expiry"></p><label for="enrollment-command">一次性安装命令（含临时凭据）</label><textarea id="enrollment-command" rows="5" readonly spellcheck="false" autocomplete="off"></textarea><div class="dialog-actions"><button id="enrollment-copy" class="button" type="button">复制安装命令</button><button id="enrollment-revoke-current" class="button danger-outline" type="button">撤销此邀请</button></div><p class="field-help">页面关闭或退出登录后清除本地命令。邀请的服务端有效期独立计算，关闭页面不会撤销邀请。</p></section>
+    </form>
+  </dialog>
   <dialog id="action-dialog" class="action-dialog"><form id="dialog-form"><div class="dialog-heading"><div><p class="eyebrow">CONFIRM OPERATION</p><h2 id="dialog-title">确认操作</h2></div><button id="dialog-close" class="icon-button" type="button" aria-label="关闭操作对话框">×</button></div><p id="dialog-description"></p><div id="dialog-snapshot-field"><label for="dialog-snapshot">选择有效快照</label><select id="dialog-snapshot"></select></div><div id="dialog-plan" class="plan-box" hidden><strong>恢复预览</strong><pre id="dialog-plan-text"></pre></div><div id="dialog-flags" class="dialog-flags"></div><label for="dialog-confirm">输入确认文字 <strong id="dialog-confirm-word"></strong></label><input id="dialog-confirm" autocomplete="off" required><p id="dialog-error" class="form-error" role="alert"></p><div class="dialog-actions"><button id="dialog-cancel" class="button" type="button">取消</button><button id="dialog-submit" class="button primary" type="submit">确认执行</button></div></form></dialog>
 </body>
 </html>

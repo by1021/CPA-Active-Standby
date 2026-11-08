@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Every SSH key passes this forced dispatcher, including invitation identities.
+set -Eeuo pipefail
+umask 077
+ROOT=$(cd -- "$(dirname -- "$(realpath -e -- "${BASH_SOURCE[0]}")")/.." && pwd)
+STATE=${CPA_STATE_DIR:-/state}
+if [[ ${1:-} == --state-dir ]]; then STATE=${2:?}; shift 2; fi
+[[ $# == 0 && -f $STATE/config.json && -f ${SSH_USER_AUTH:-} && ! -L ${SSH_USER_AUTH:-} ]] || { echo 'SSH 认证上下文缺失' >&2; exit 1; }
+[[ $(stat -c %u "$SSH_USER_AUTH") == "$EUID" && $(stat -c %s "$SSH_USER_AUTH") -le 4096 ]] || { echo 'SSH 认证上下文无效' >&2; exit 1; }
+auth=$(awk '$1=="publickey" && $2=="ssh-ed25519" {print $2 " " $3}' "$SSH_USER_AUTH")
+[[ $auth =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+$ ]] || { echo 'SSH 公钥身份无效' >&2; exit 1; }
+original=${SSH_ORIGINAL_COMMAND:-}
+[[ -n $original && ${#original} -le 512 && $original != *$'\n'* && $original != *$'\r'* ]] || { echo 'SSH 请求格式无效' >&2; exit 1; }
+read -r -a words <<< "$original"
+for word in "${words[@]}"; do [[ $word =~ ^[A-Za-z0-9_-]+$ ]] || { echo 'SSH 请求参数无效' >&2; exit 1; }; done
+export CPA_ENROLL_AUTH_KEY=$auth
+# A temporary key is never allowed to fall through to the ordinary RPC path,
+# including after its invitation expires or is revoked.
+for file in "$STATE"/enrollment/invites/*/record.json; do
+  [[ -f $file && ! -L $file ]] || continue
+  if [[ $(jq -r '.invitation_public_key//empty' "$file") == "$auth" ]]; then
+    id=$(jq -er .invite_id "$file")
+    [[ ${#words[@]} == 3 && ${words[0]} == enroll && ${words[1]} == "$id" && ${words[2]} =~ ^(bundle|register|status)$ ]] || { echo '临时安装身份仅允许本次邀请操作' >&2; exit 1; }
+    exec "$ROOT/bin/cpa-dr-enroll-rpc" --state-dir "$STATE" --invite-id "$id" "${words[2]}"
+  fi
+done
+case ${words[0]} in
+  enroll-complete|enroll-probe)
+    [[ ${#words[@]} == 2 ]] || exit 1
+    operation=${words[0]#enroll-}
+    exec "$ROOT/bin/cpa-dr-enroll-rpc" --state-dir "$STATE" --invite-id "${words[1]}" "$operation";;
+  enroll-activate|enroll-deactivate)
+    [[ ${#words[@]} == 3 ]] || exit 1
+    exec "$ROOT/bin/cpa-dr-enroll-rpc" --state-dir "$STATE" --invite-id "${words[1]}" "${words[0]#enroll-}" "${words[2]}";;
+esac
+line="restrict,command=\"$ROOT/bin/cpa-dr-rpc --state-dir $STATE\" $auth"
+grep -Fxq -- "$line" "$STATE/ssh/authorized_keys" || { echo 'SSH 身份不是登记的永久备份公钥' >&2; exit 1; }
+exec "$ROOT/bin/cpa-dr-rpc" --state-dir "$STATE"

@@ -54,6 +54,42 @@ const CPAUI = (() => {
     if (flags.some(flag => !flag)) return "请检查并勾选全部隔离／停机确认项。";
     return "";
   }
+  /** Serialize installation choices only; permanent identities stay server-side. */
+  function buildEnrollment(config, values) {
+    if (config?.node_role !== "primary") throw new Error("请在已配置的主机生成备机安装命令。");
+    if (config.enabled) throw new Error("请先停用定时任务并保存配置，再生成安装邀请。");
+    if (!config.sources?.length) throw new Error("请先保存至少一项备份内容。");
+    const host = (value, label) => {
+      const original = String(value ?? "");
+      if (/[\x00-\x1f\x7f]/.test(original)) throw new Error(`${label}不包含控制字符。`);
+      const result = original.trim();
+      if (!/^[A-Za-z0-9:][A-Za-z0-9_.:-]{0,252}$/.test(result)) throw new Error(`${label}须为 IP 或主机名，不填写命令或 URL。`);
+      return result;
+    };
+    const port = (value, label) => {
+      const result = integer(value, label);
+      if (result > 65535) throw new Error(`${label}须在 1 到 65535 之间。`);
+      return result;
+    };
+    const absolutePath = (value, label) => {
+      const original = String(value ?? "");
+      if (/[\x00-\x1f\x7f]/.test(original)) throw new Error(`${label}不包含控制字符。`);
+      const result = original.trim();
+      if (!result.startsWith("/") || result === "/" || /[\x00-\x1f\x7f\\'"$:]|\/\/|\/(?:\.|\.\.)(?:\/|$)/.test(result)) throw new Error(`${label}须为不含特殊字符、. 或 .. 的独立绝对路径。`);
+      return result;
+    };
+    if (!["docker", "native"].includes(values.deployment)) throw new Error("请选择 Docker 或 Linux 本地部署。");
+    const ttl = integer(values.ttlSeconds, "邀请有效期");
+    if (ttl < 60 || ttl > 86400) throw new Error("邀请有效期须在 60 到 86400 秒之间。");
+    const request = {
+      primary_host: host(values.primaryHost, "主机连接地址"), primary_port: port(values.primaryPort, "主机 SSH 端口"),
+      backup_host: host(values.backupHost, "备机连接地址"), backup_port: port(values.backupPort, "备机 SSH 端口"),
+      backup_bind_host: host(values.backupBindHost, "备机 SSH 监听地址"), data_dir: absolutePath(values.dataDir, "备机数据父目录"),
+      deployment: values.deployment, ttl_seconds: ttl, auto_enable: Boolean(values.autoEnable),
+    };
+    if (String(values.output ?? "").trim()) request.output = absolutePath(values.output, "备机配置目录");
+    return request;
+  }
   function jobOutcome(job, label) {
     if (job.running || !job.finished_at) return null;
     return {
@@ -61,7 +97,11 @@ const CPAUI = (() => {
       error: Boolean(job.error),
     };
   }
-  return {formatBytes, validateSource, buildConfig, validateConfirmation, jobOutcome};
+  function enrollmentStatus(status) {
+    const labels = {issued:"等待备机执行",registered:"已注册 · 等待首备",committing:"首备已验证 · 最终提交中",completed:"安装与首备完成",revoked:"已撤销",expired:"已过期"};
+    return {label: Object.hasOwn(labels, status) ? labels[status] : status || "等待确认", revocable: ["issued", "registered"].includes(status)};
+  }
+  return {formatBytes, validateSource, buildConfig, buildEnrollment, enrollmentStatus, validateConfirmation, jobOutcome};
 })();
 if (typeof module !== "undefined") module.exports = CPAUI;
 
@@ -69,6 +109,10 @@ if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", () => {
     const $ = id => document.getElementById(id);
     const state = {token: "", config: null, status: {}, snapshots: [], panel: "overview", busy: false, dialog: null, polling: false, manualJob: null, pinnedFailure: ""};
+    let enrollmentSession = 0;
+    let enrollmentBusy = false;
+    let enrollmentConfig = null;
+    let currentInvite = "";
     const roleNames = {primary: "主服务器", backup: "备服务器"};
     const phaseNames = {unconfigured: "等待配置", primary_active: "主机服务中", backup_standby: "备机待命", backup_active: "备机已接管", primary_recovering: "主机待恢复", promoting: "正在接管", paused: "保护态 · 已暂停", failback_failed: "回灌失败 · 已保护", handover_pending: "最终交接中"};
     const actionNames = {backup: "备份", secondary: "二次备份", restore: "恢复", promote: "备机接管", "prepare-recovery": "主机准备恢复", failback: "最终回灌", pause: "暂停", resume: "恢复调度", verify: "校验"};
@@ -117,6 +161,14 @@ if (typeof document !== "undefined") {
       return data;
     }
     function logout(message = "") {
+      enrollmentSession += 1;
+      enrollmentBusy = false;
+      enrollmentConfig = null;
+      clearEnrollmentSecret();
+      $("enrollment-list").replaceChildren();
+      $("enrollment-error").textContent = "";
+      $("enrollment-list-error").textContent = "";
+      if ($("enrollment-dialog").open) $("enrollment-dialog").close();
       state.token = "";
       state.config = null;
       state.manualJob = null;
@@ -136,6 +188,7 @@ if (typeof document !== "undefined") {
       for (const node of document.querySelectorAll(".nav-button")) node.classList.toggle("active", node.dataset.panel === name);
       $("page-breadcrumb").textContent = {overview: "运行概览", config: "节点配置", snapshots: "备份历史", recovery: "接管与回灌"}[name];
       if (name === "snapshots") refreshSnapshots().catch(error => showMessage(error.message, true));
+      if (name === "config") refreshEnrollments().catch(error => showMessage(error.message, true));
     }
     function renderStatus(status) {
       state.status = status;
@@ -169,6 +222,9 @@ if (typeof document !== "undefined") {
       $("prepare-recovery").disabled = status.node_role !== "primary" || job.running;
       $("failback").disabled = status.node_role !== "primary" || job.running || !["primary_recovering", "failback_failed"].includes(status.phase);
       if (!state.busy) $("backup-now").disabled = Boolean(job.running);
+      $("enrollment-open").disabled = enrollmentBusy || state.busy || job.running || config.node_role !== "primary" || config.enabled || !config.sources?.length || status.phase !== "primary_active";
+      $("enrollment-refresh").disabled = enrollmentBusy || config.node_role !== "primary";
+      $("enrollment-help").textContent = config.node_role !== "primary" ? "请在主机控制台生成邀请；本机为备机，安装后查看首份有效快照。" : config.enabled ? "生成邀请前请先停用定时任务并保存配置；已有主备配对不会被新邀请静默替换。" : "先保存主机角色和备份内容，保持定时任务停用；专用 SSH 必须已监听双方可达地址。安装命令含临时凭据，仅交给备机管理员。";
     }
     async function refreshStatus() {
       const status = await request("/api/status");
@@ -247,6 +303,82 @@ if (typeof document !== "undefined") {
         values.sources.push(source);
       }
       return CPAUI.buildConfig(state.config, values);
+    }
+    function clearEnrollmentSecret() {
+      currentInvite = "";
+      $("enrollment-command").value = "";
+      $("enrollment-expiry").textContent = "";
+      $("enrollment-result").hidden = true;
+    }
+    function setEnrollmentBusy(value) {
+      enrollmentBusy = value;
+      for (const id of ["enrollment-create", "enrollment-copy", "enrollment-revoke-current"]) $(id).disabled = value;
+      for (const button of $("enrollment-list").querySelectorAll("button")) button.disabled = value;
+      $("enrollment-create").textContent = value ? "正在处理…" : "确认生成安装命令";
+      renderStatus(state.status);
+    }
+    async function refreshEnrollments() {
+      if (!state.token || state.config?.node_role !== "primary") {
+        $("enrollment-list").replaceChildren(element("p", "在主机查看安装邀请；备机在备份历史核对收到的恢复点。", "empty-state compact-empty"));
+        return;
+      }
+      const session = enrollmentSession;
+      const result = await request("/api/enrollment");
+      if (session !== enrollmentSession || !state.token) return;
+      $("enrollment-list-error").textContent = "";
+      $("enrollment-list").replaceChildren();
+      for (const invite of result.invites || []) {
+        const status = CPAUI.enrollmentStatus(invite.status);
+        const row = element("div", undefined, "enrollment-row");
+        const detail = element("div");
+        detail.append(element("strong", status.label), element("small", `${invite.backup_host || "—"}:${invite.backup_port || "—"} · ${invite.deployment || "—"} · 有效至 ${date(invite.expires_at)}`), element("code", invite.invite_id || "—"));
+        if (invite.snapshot_id) detail.append(element("small", `首备快照 ${invite.snapshot_id}；业务接管仍须单独确认。`));
+        row.append(detail);
+        if (status.revocable) {
+          const revoke = element("button", "撤销邀请", "button small danger-outline");
+          revoke.type = "button";
+          revoke.disabled = enrollmentBusy;
+          revoke.setAttribute("aria-label", `撤销邀请 ${invite.invite_id}`);
+          revoke.addEventListener("click", async () => {
+            if (!window.confirm(`确认撤销邀请 ${invite.invite_id}（${invite.backup_host || "—"}）？撤销不删除已安装服务、身份或备份。`)) return;
+            await revokeEnrollment(invite.invite_id);
+          });
+          row.append(revoke);
+        }
+        $("enrollment-list").append(row);
+      }
+      if (!$("enrollment-list").children.length) $("enrollment-list").append(element("p", "暂无安装邀请。生成命令后在备机执行。", "empty-state compact-empty"));
+    }
+    async function revokeEnrollment(id) {
+      if (enrollmentBusy || !id) return;
+      const session = enrollmentSession;
+      setEnrollmentBusy(true);
+      try {
+        await request("/api/enrollment/revoke", "POST", {invite_id:id});
+        if (session !== enrollmentSession || !state.token) return;
+        if (id === currentInvite) clearEnrollmentSecret();
+        showMessage("邀请已撤销；已安装的服务、身份和备份保持原状。");
+        await refreshEnrollments();
+      } catch (error) {
+        if (session === enrollmentSession && state.token) { $("enrollment-list-error").textContent = error.message; $("enrollment-error").textContent = error.message; }
+      } finally { if (session === enrollmentSession) setEnrollmentBusy(false); }
+    }
+    async function openEnrollment() {
+      if (enrollmentBusy) return;
+      const session = enrollmentSession;
+      setEnrollmentBusy(true);
+      clearEnrollmentSecret();
+      $("enrollment-error").textContent = "";
+      try {
+        enrollmentConfig = await request("/api/config");
+        if (session !== enrollmentSession || !state.token) return;
+        if (enrollmentConfig.node_role !== "primary" || enrollmentConfig.enabled || !enrollmentConfig.sources?.length) throw new Error("请先保存主机角色及备份内容，并停用定时任务。");
+        $("enrollment-form").reset();
+        const relative = enrollmentConfig.sources.map(source => ({name:source.name,kind:source.kind,relative_path:source.path === enrollmentConfig.allowed_root ? "." : source.path.slice(enrollmentConfig.allowed_root.replace(/\/$/, "").length + 1)}));
+        $("enrollment-preview").textContent = JSON.stringify({主机ID:enrollmentConfig.node_id,数据项目:relative,同步间隔秒:enrollmentConfig.interval_seconds,二次备份间隔秒:enrollmentConfig.secondary_interval_seconds,每类保留份数:enrollmentConfig.retention_count,容量上限字节:enrollmentConfig.max_snapshot_bytes}, null, 2);
+        $("enrollment-dialog").showModal();
+      } catch (error) { if (session === enrollmentSession && state.token) showMessage(error.message, true); }
+      finally { if (session === enrollmentSession) setEnrollmentBusy(false); }
     }
     async function saveConfig(mode = "save") {
       $("config-error").textContent = "";
@@ -394,6 +526,45 @@ if (typeof document !== "undefined") {
       finally { setBusy(false); }
     });
     $("config-form").addEventListener("submit", event => { event.preventDefault(); saveConfig("save"); });
+    $("enrollment-open").addEventListener("click", openEnrollment);
+    $("enrollment-refresh").addEventListener("click", async () => {
+      $("enrollment-refresh").disabled = true;
+      try { await refreshEnrollments(); }
+      catch (error) { if (state.token) $("enrollment-list-error").textContent = error.message; }
+      finally { renderStatus(state.status); }
+    });
+    for (const id of ["enrollment-close", "enrollment-cancel"]) $(id).addEventListener("click", () => $("enrollment-dialog").close());
+    $("enrollment-dialog").addEventListener("close", clearEnrollmentSecret);
+    $("enrollment-form").addEventListener("submit", async event => {
+      event.preventDefault();
+      if (enrollmentBusy) return;
+      const session = enrollmentSession;
+      clearEnrollmentSecret();
+      $("enrollment-error").textContent = "";
+      try {
+        if (!$("enrollment-form").reportValidity() || !$("enrollment-confirm").checked) return;
+        const body = CPAUI.buildEnrollment(enrollmentConfig, {primaryHost:$("enrollment-primary-host").value, primaryPort:$("enrollment-primary-port").value, backupHost:$("enrollment-backup-host").value, backupPort:$("enrollment-backup-port").value, backupBindHost:$("enrollment-backup-bind").value, dataDir:$("enrollment-data-dir").value, deployment:$("enrollment-deployment").value, output:$("enrollment-output").value, ttlSeconds:$("enrollment-ttl").value, autoEnable:$("enrollment-auto-enable").checked});
+        setEnrollmentBusy(true);
+        const result = await request("/api/enrollment", "POST", body);
+        if (session !== enrollmentSession || !state.token || !$("enrollment-dialog").open) return;
+        if (typeof result.command !== "string" || !result.command || !result.invite_id) throw new Error("服务未返回有效安装命令，请核对主机版本与安装记录。");
+        currentInvite = result.invite_id;
+        $("enrollment-command").value = result.command;
+        $("enrollment-expiry").textContent = `邀请 ${result.invite_id} · 有效至 ${date(result.expires_at)}。执行后以首备校验结果为准。`;
+        $("enrollment-result").hidden = false;
+        await refreshEnrollments();
+      } catch (error) { if (session === enrollmentSession && state.token) $("enrollment-error").textContent = error.message; }
+      finally { if (session === enrollmentSession) setEnrollmentBusy(false); }
+    });
+    $("enrollment-copy").addEventListener("click", async () => {
+      if (!$("enrollment-command").value) return;
+      try { await navigator.clipboard.writeText($("enrollment-command").value); showMessage("安装命令已复制；仅交给指定备机管理员，命令含短期凭据。"); }
+      catch { $("enrollment-command").select(); $("enrollment-error").textContent = "浏览器未开放剪贴板权限，已选中命令，请手动复制。"; }
+    });
+    $("enrollment-revoke-current").addEventListener("click", async () => {
+      if (!currentInvite || !window.confirm(`确认撤销当前邀请 ${currentInvite}？`)) return;
+      await revokeEnrollment(currentInvite);
+    });
     $("save-enable").addEventListener("click", () => saveConfig("enable"));
     $("test-peer").addEventListener("click", () => saveConfig("pair"));
     $("add-source").addEventListener("click", () => addSource());
@@ -457,7 +628,7 @@ if (typeof document !== "undefined") {
     setInterval(async () => {
       if (!state.token || state.polling || state.busy || document.hidden) return;
       state.polling = true;
-      try { await refreshStatus(); if (state.panel === "snapshots" || state.panel === "overview" || state.status.job?.running) await refreshSnapshots(); }
+      try { await refreshStatus(); if (state.panel === "snapshots" || state.panel === "overview" || state.status.job?.running) await refreshSnapshots(); if (state.panel === "config" && !enrollmentBusy) await refreshEnrollments(); }
       catch (error) { $("connection").textContent = "连接异常"; $("connection").classList.add("error"); showMessage(error.message, true); }
       finally { state.polling = false; }
     }, 3000);
