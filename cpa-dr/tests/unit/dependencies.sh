@@ -221,12 +221,13 @@ printf 'PASS: coreutils bootstrap works without dirname and duplicate package ma
 if ((EUID == 0)) && command -v setpriv >/dev/null; then
   reset_fixture
   rm "$TMP/bin/jq" "$TMP/bin/sudo"
-  mkdir -p "$TMP/app/scripts" "$TMP/app/lib"
+  mkdir -p "$TMP/app/scripts/packaging" "$TMP/app/lib"
   cp "$ROOT/start.sh" "$TMP/app/start.sh"
   cp "$ROOT/scripts/start-dependencies.sh" "$TMP/app/scripts/"
   cp "$ROOT/scripts/start-lifecycle.sh" "$TMP/app/scripts/"
   cp "$ROOT/scripts/start-manager.sh" "$TMP/app/scripts/"
   cp -a "$ROOT/scripts/install" "$TMP/app/scripts/"
+  cp "$ROOT/scripts/packaging/location.sh" "$TMP/app/scripts/packaging/"
   cp "$ROOT/lib/common.sh" "$TMP/app/lib/"
   chmod 755 "$TMP" "$TMP/app" "$TMP/app/scripts" "$TMP/app/lib"
   chmod 777 "$TMP/bin" "$TMP/out"

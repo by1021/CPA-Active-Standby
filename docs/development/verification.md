@@ -260,3 +260,146 @@ CLI依据已用本机 `docker start/stop/ps/inspect/logs --help` 与 `systemctl 
 GitHub 与 Docker/native 的文件权限可能不同，安装包已统一目录、可执行入口及公共文件权限，使同一提交在三种来源下生成相同归档摘要。下载错误不会继续使用部分归档；备机摘要与主机不符时停止，不回退 SSH。旧本地源码邀请保留原 SSH 安装包链路。
 
 在线检查仅验证 GitHub 提交解析与固定版本 raw/codeload 文件下载，不执行真实主机安装。Linux 宿主 systemd、包管理及网络策略、CPA/OAuth/业务恢复、Cloudflare 切换仍属目标环境待验证范围。以上本地日志不上传仓库，避免公开邀请凭据。
+
+## 2026-11-08 当前目录安装、稳定入口与连续配对
+
+验收见[需求](requirements/install-location.md)与[设计 AC1–AC9](designs/install-location-design.md)，基线 `5282bd97ce566192f84684dee9e4f53942e93a23`。实现及文档使用隔离 worktree，主仓整合后实跑以下检查。项目未初始化 `.ai_state`，`athena run` 明确输出 `no active sprint: evidence not recorded`；本记录是普通本地验证，不是正式 Athena 门禁、线上部署或远端发布凭证。
+
+### 结果与复验
+
+| 范围 | 仓库根目录命令 | 本地日志与实际结果 |
+|---|---|---|
+| 稳定布局、关联与旧部署 | `bash cpa-dr/tests/integration/location.sh`；`bash cpa-dr/tests/integration/github_install.sh` | `install-location-regression-final.log`：当前目录/自定义项目与配置、跨目录入口、显式目标、旧源码登记、不覆盖其他 start.sh、记录/清单/路径/权限/身份负例、卸载清除收据通过 |
+| 邀请衔接与提权参数 | `bash cpa-dr/tests/integration/after_install.sh`；`bash cpa-dr/tests/integration/invitation_form.sh` | `install-location-static-sudo-final.log` / `install-location-polish-final.log`：PTY 接受/拒绝/默认值、复跑/非交互、不挂起、邀请失败与安装成功分开、主备端口/TTL/调度选择、Native sudo 精确 argv（含空格路径）通过 |
+| 真实安装锁交接 | `bash cpa-dr/tests/integration/after_install.sh` | `install-location-polish-final.log`：真实三进程竞争；成功与邀请退出码 17 两分支，保留原 EXIT trap/退出码；后继锁不被旧安装删除、第三项操作被拒绝 |
+| 公共 GitHub 入口与真实旧版本 | `bash cpa-dr/tests/e2e/github_entrypoint.sh` | `install-location-runtime-final.log` / `install-location-polish-final.log`：HTTPS 为 fixture，真实 Docker 首装/非交互邀请、当前/项目/源码/跨目录及菜单、秘密隐藏、零网络复跑、原身份/容器保留、启停与卸载通过；从基线 Git 对象创建的真实旧隐藏部署，仅登记入口，不下载业务源码、不重启、不改旧源码/配置/身份 |
+| GitHub 来源主备安装 | `CPA_TEST_GITHUB=1 bash cpa-dr/tests/e2e/enrollment_install.sh`；同参数运行 `enrollment_docker_install.sh` | `install-location-runtime-final.log`：无源码安装、相同包摘要、实际 CGI/SSH 双向配对和校验首备；原邀请换 PWD 重跑复用原项目、身份/配置/容器不变，不重新下载或重启 |
+| 旧 SSH 来源安装兼容 | 不设置 `CPA_TEST_GITHUB`，运行以上两种 enrollment E2E | `install-location-ssh-final.log`：固定 SSH 包、无源码 Native/Docker 安装、真实配对/首备及原命令换目录续装通过 |
+| 生命周期与业务回归 | `bash cpa-dr/tests/e2e/compose_smoke.sh` / `docker_user.sh` / `native_installer.sh`；核心、服务、管理、依赖、部署、邀请/预检/指纹/协议、API 回归 | `install-location-runtime-final.log` / `install-location-regression-final.log`：root/nonroot Docker、Native 安装/启停/重启/卸载/重装/清除及归属/任务保护，快照/恢复/接管/回切、真实 SSH 协议、CGI 与原配置保护通过 |
+| 页面、文档与静态 | `node --test cpa-dr/tests/unit/ui.test.cjs cpa-dr/tests/unit/enrollment_ui.test.cjs`；文档/结构检查；所有 Shell 逐文件 `bash -n`、warning 级 `shellcheck -x`、`git diff --check` | `install-location-regression-final.log` / `install-location-static-sudo-final.log` / `install-location-polish-final.log`：9 项页面单测及 75 个 Shell 文件通过，本地 Markdown 链接、兼容入口和原 Cloudflare Worker 摘要保持 |
+
+以上日志都在本机 `.runtime/`，不上传原始邀请命令、令牌、私钥或业务数据。命令通过 `athena run -- bash -c 'set -Eeuo pipefail; …'` 组合执行，外层也传播退出码；不把日志中的预期负例 stderr 当成功，也不掩盖整组失败。
+
+主仓全面回归及两种来源的运行验证后，有界检查补修邀请锁交接；补修后的公共入口真实 Docker、邀请/锁竞争和全量静态重新运行，以 `install-location-polish-final.log` 为准。其他日志保留其原先执行树与范围，不改称补修后全量重跑。
+
+### 缺陷回归与有界清理
+
+- 新稳定入口测试在旧实现报 `stable location implementation missing`；公共入口红测显示源码仍落在 HOME 隐藏目录。新增当前目录项目、受限 JSON 关联与稳定入口后，模拟/真实入口均通过。
+- 依赖 fixture 原先漏复制新增 `location.sh`，导致回归失败；修正 fixture 后重新通过，未因此修改宿主依赖策略。
+- 换 PWD 的 Native 重跑断言曾把只读 `systemctl show` 也统计为服务重启；断言改为只计启停/重启/enable/disable/daemon-reload，保留身份/配置/源码与服务无修改检查。
+- Native sudo 重入原先遗漏 `--generate-backup` 和邀请参数；用真实参数构造器及 NUL 分隔 argv 先红后绿，端点、备机空格路径、TTL、调度意愿与确认完整保留。
+- 邀请衔接原先释放锁后仍保留旧路径清理目标，父安装 EXIT 会删除后来者持有的锁；真实三进程先红后绿。修复为持锁清理本次路径、解除旧清理目标后释放 FD，保留原 EXIT trap 和成功/失败退出码，不放松互斥。
+
+| polish 检查 | 结论 |
+|---|---|
+| 临时代码 | 生产无新增调试入口；HTTPS、sudo、systemctl 模拟与故障注入仅在测试 |
+| 注释 | 稳定入口、JSON 信任边界、旧源码接管、邀请连续步骤与锁归属交接有说明 |
+| 重复 | 复用原邀请/部署/生命周期 CLI；参数映射仅用于邀请衔接与提权，不另建安装状态机 |
+| 低效 | 仅发现已知目录与当前源码的直接配置记录，无全盘扫描；已有安装不再下载或重建 |
+| 范围 | 源码/配置/状态分离，旧部署不搬数据、不追 main；原任务锁/身份/受限 RPC 保持，架构及操作文档同步 |
+
+### 审查与环境边界
+
+首审原样记录见[首审 REWORK](reviews/review-install-location-initial.md)，绑定源码集合 SHA256 `3e626e6df2e61bf619fe7b3e30ee6a98a85555d804ee8ccdc13c317e5b790089`；该哈希及前述 final 日志不冒充修复后的最终源码证据。首审七项已补测试并修复：
+
+| 首审问题 | 修复与回归 |
+|---|---|
+| P1 项目锁/标记硬链接截断数据 | 单链接、普通文件、可信权限/归属预检；标记核对内容并原子写，锁非截断打开；外部数据摘要保持，FIFO/目录/可写文件拒绝 |
+| P1 旧配置抢过源码自带目标 | 源码自带部署优先，实际 `stop` 精确 argv 断言及旧目标未停止断言；原 Native `.env` 双后端歧义测试不变 |
+| P2 逻辑符号链接执行目录 | 主机/备机/安装收尾均先捕获 `pwd -P`；公共 Docker 从逻辑 cwd 完成安装，稳定入口定位物理目录 |
+| P2 悬空源码清单链接 | 存在或链接均进入校验，悬空/异常清单拒绝且不执行源码 |
+| P2 已知异常候选被跳过 | 不可读/链接/损坏目录或记录明确报未知/异常，阻止写入；不改选目标或误报未安装 |
+| P2 测试网络残留 | 公共 E2E 核对项目标签，仅清理本项目 default 网络并断言不存在；首审遗留网络核验空端点后定点清理，无全局 prune |
+| P3 集中输出缺状态目录 | 入口登记从核验过的部署记录输出真实 state_dir，覆盖新装/旧接管/备机；自定义独立状态路径断言 |
+
+首审七项修复后主仓 `athena run` 实际退出 0：
+
+| 本地日志 | 此次重新执行范围 |
+|---|---|
+| `.runtime/install-location-reviewfix-regression.log` | location/github_install/after_install/invitation_form/manager/start/invitation_installer/join_preflight、依赖与邀请 unit、default/custom 真实 SSH 协议、全部 75 Shell 语法与 warning 级 ShellCheck、diff 检查 |
+| `.runtime/install-location-reviewfix-runtime.log` | 逻辑 cwd 公共 GitHub 入口真实 Docker 首装/管理/旧接管及定点网络清理、原 Native 完整生命周期与多部署/权限保护；未设置 CPA_TEST_GITHUB 的 Native/Docker SSH 来源首装、配对/首备与换目录重放 |
+| `.runtime/install-location-reviewfix-github-pair.log` | 主仓设置 CPA_TEST_GITHUB=1 的 Native/Docker GitHub 来源无源码安装；包摘要/来源一致、实际 CGI/SSH 配对与首备，原命令换目录重放不重新下载/重启/改身份；HTTPS 为 fixture |
+| `.runtime/install-location-reviewfix-docs-ui.log` / `install-location-reviewfix-polish-final.log` | 9 项页面 unit、所有本地 Markdown 链接、结构/兼容入口/Worker 原摘要与 diff；同步七项关闭和实际边界后复核五项 polish，无新增生产改动 |
+
+隔离写者 `installer_impl` 的修复后运行记录为 `/tmp/cpa-location-review-runtime-complete.log` 与 `/tmp/cpa-location-review-pair-complete.log`；后者设置 `CPA_TEST_GITHUB=1`，覆盖 Native/Docker 两种部署的 GitHub 来源，不误称为 SSH 与 GitHub 两种来源。写者报告退出 0，不替代主仓观察到的实际退出码。七项红测在 `/tmp/cpa-location-{cwd,manifest,project-files,discovery,state,central-state,network}-red.log`；错控目标的原复现保留在首审。中途漏写 stop `--time 60`、动态 fixture 的 SC2034、运行中编辑脚本导致 EOF 及 Native 原歧义回归失败均已区分，不当作成功证据；最终冻结脚本后复跑。
+
+[二审 REWORK](reviews/review-install-location-second.md)绑定源码集合 SHA256 `10876dd8de9ed214dbfce7f9f4a81e95ffcda53890f4f79b1f374b2b9b9cbb08`，确认首审七项原失败输入已关闭，补三项相邻边界：固定源码清单缺失、HOME 中间祖先不可遍历，以及显式 Native 后端被源码 Docker 配置覆盖。三项均新增红绿回归，保持本地无清单来源、旧 v1 记录及显式目标兼容；固定 release 的收尾测试 fixture 补真实摘要清单，原安装/状态断言不变。二审之前的日志只绑定各自原执行树，不改称这三项修复后的全量重跑。
+
+二审三项修复后主仓 `athena run` 实际退出 0：
+
+| 最终本地日志 | 重新执行范围与结果 |
+|---|---|
+| `.runtime/install-location-review3-regression-final.log` | 八项安装/管理/邀请 integration、依赖及邀请 unit、default/custom 真实 SSH 协议；清单缺失/来源/布尔要求/旧 v1/显式目标、本地 github checkout 与 development release 正例、HOME 中间权限/真实不存在、显式 Native 选择通过；75 文件语法/无额外 source-path 的 warning ShellCheck、六文件冻结 SHA 及 diff 通过 |
+| `.runtime/install-location-review3-runtime-final.log` | 公共 GitHub 逻辑 cwd 的真实 Docker 新安装/稳定管理/旧接管/定点网络清理，原 Native 完整安装和多部署/权限生命周期；SSH 与 GitHub 两种来源分别执行 Native/Docker 无源码安装、实际配对/首备及换目录重放，均通过 |
+| `.runtime/install-location-review3-polish-final.log` | 最终架构、操作文档及三项关闭同步后复核本地链接/结构/Worker 原摘要、9 项页面 unit 和 diff，无追加生产功能 |
+
+隔离写者的 `/tmp/cpa-location-second-review-{ready-final,runtime-final,manager-static-final}.log` 均报告退出 0；生产代码在其最终 E2E 后未再变化，最后仅拆 manager 测试的独立赋值并窄注释 SC2034，原断言未改。主仓最终回归重新检查该测试和全部 75 文件；运行测试期间生产与 E2E 脚本冻结，没有编辑正在执行的脚本。红证据为 `/tmp/cpa-location-second-review-{github,location,manager,checkout,full-shellcheck}-red.log`。
+
+主仓第一次三项复验日志 `install-location-review3-regression.log` 实际退出 1：行为/协议已通过，但最后无额外 source-path 的全量 ShellCheck 报 manager.sh:324 SC2034；该日志不是整体成功证据。普通 github checkout 被过宽路径规则误判固定源码也先红复现，收紧真实隐藏 SHA 目录与 40/64 位 release 标识后正例通过。以上问题关闭后才使用 final 日志和新冻结清单送最终独立审查。
+
+### 公共入口权限复核与 Native 兼容
+
+[三审 REWORK](reviews/review-install-location-third.md)绑定源码集合 SHA256 `f7077416baec4f6e8843af13d66ead080dda1e889017f684539b8a415162c680`，确认前十项原失败输入关闭，补一项公共入口遗漏：有效旧部署位于不可遍历的 HOME 祖先下时，非 root 调用者曾下载源码并创建第二份部署。`/tmp/cpa-location-review3-public-red.log`保留该复现；公共引导器现在在 SHA/helper 下载前检查，直接 helper 在依赖前独立检查。实际 UID 65534 的对照覆盖可读旧接管、祖先/链接拒绝、缺 jq 不安装依赖、显式/稳定目标优先及真正不存在的新安装；失败均无网络、配置、源码或身份改写。
+
+初版前置保护又暴露 Native 兼容回归：已有可信关联、明确配置位于 root 私有目录时，保护曾提前拦截原 CLI 的受控 sudo。`/tmp/cpa-location-review4-native-public-red.log` / `-green.log`保留先红后绿；已有稳定关联只探测项目，由可信入口和原 CLI 校验配置及决定提权。真实 UID 覆盖 public-explicit/public-associated/direct × leaf/ancestor 六种正例，精确 sudo argv、无 HTTPS/配置/源码改写；无关联私有目标仍在依赖之前拒绝。sudo 为 spy，正例预期退出 99，不把它称为真实宿主提权。
+
+最新回归首次整组失败保留于`install-location-review4-regression-initial-failed.log`：manager fixture 的短命 coprocess 在父进程复制 FD 前退出，触发`CPA_GUARD[0]: unbound variable`。改为 LOCKED→父复制 FD→EXIT→wait→release 的确定性握手，无 sleep/重试、不改生产锁保护，也保留 SIGPIPE 断言。之后主仓`install-location-review4-regression-fixture-failed.log`及`install-location-review4-github-main-diagnostic.log`实际退出 1：新增 Native fixture 的`cp -a`继承主仓源码目录 775，`go+rX`保留组可写权限，被可信来源检查正确拒绝。测试 fixture 已用`go-w,go+rX`归一为可信本地源码；隔离副本仅将源码根设为 775，红退出 1→同输入绿退出 0，证据为`/tmp/cpa-location-review4-fixture-permissions-{red,green}.log`。不修改宿主仓库权限、不放松生产校验。这些失败不作为整组成功证据。
+
+三审修复与兼容调整后，主仓最新`athena run`实际结果：
+
+| 最终本地日志 | 重新执行范围与结果 |
+|---|---|
+| `.runtime/install-location-review4-regression-final.log` | 实际退出 0；location/github_install/manager/after_install/invitation_form/start、dependencies；公共真实 UID 权限正负例、Native 受控 sudo 精确参数、确定性 guard 握手、775 源码 fixture 均通过。全部 75 文件语法、无额外 source-path 的 warning ShellCheck、最新四文件冻结 SHA 与 diff 通过 |
+| `.runtime/install-location-review4-runtime-verified.log` | 实际退出 0；公共入口真实 Docker/逻辑 cwd/管理/旧接管/定点网络清理、GitHub 来源 Native/Docker 的实际 CGI/SSH 配对与首备及换目录重放均通过，运行前后四文件 SHA 一致；其后仅非 E2E 消费的 integration fixture 权限归一，生产/E2E 未变 |
+
+隔离写者的公共 Docker `/tmp/cpa-location-review4-public-runtime.log`、原 Native 生命周期 `/tmp/cpa-location-review4-native-runtime.log`报告退出 0；Native 的 systemctl/sudo/包管理仍为模拟。写者最初定向命令误写不存在的 unit/start.sh，`/tmp/cpa-location-review4-ready.log`退出 127；纠正后`-ready-corrected.log`退出 0，但早于最后一行 fixture 归一；归一后的`-ready-final.log`最终退出 0，全部定向及 75 文件静态通过。这些写者结果保留出处，不替代主仓实际工具返回对象；主仓最新回归覆盖归一后的最终文件。文档同步后的本地链接/结构/原 Worker 摘要、9 项页面 unit 与 diff 检查记录于`install-location-review4-polish-final.log`。
+
+二审修复后的 review3 日志与公共前置保护初版`install-location-review4-runtime-final.log`仅绑定各自原树：后者实际退出 0，但早于 Native 显式兼容修复；前者不冒充三审问题修复后的最终回归。最终独立源码审查输出保存于 `reviews/review-install-location.md`，绑定包含新源码、测试、需求和架构的冻结清单；前四轮原样结论分别保留。只排除本轮审查输出元数据，不排除生产源码。最终审查结果以该文件为准，不称为正式 `athena review accept` 凭证。
+
+### Native 提权后的关联身份
+
+[四审 REWORK](reviews/review-install-location-fourth.md)绑定源码集合 SHA256 `ed731f80cb88ce2d4fbdd1769005252df1d4192e6ed4558983bd64e0180b36b7`，确认前三轮十一项原输入已关闭，补一项 Native 私有配置重入遗漏：非 root 看不到部署记录时，仅验证稳定入口后进入原源码 sudo，root 重入的显式配置令关联 install_id 未再次核对。坏 ID 在 root 直接稳定入口被拒绝，但非 root 捕获的精确 sudo argv 以 root 重放会触达安装函数。
+
+主仓冻结复现脚本保留于本地 packet 的 `fourth-native-identity-repro.sh`，`install-location-review5-native-identity-red-final.log`实际退出 1：`ROOT_STABLE_BAD_ID_RC=1`、`ROOT_REENTRY_BAD_ID_RC=77`，好 ID 对照仍为 `ROOT_STABLE_GOOD_ID_RC=77`。DEBUG hook 仅在安装函数入口退出 77，未调用安装函数体；sudo、依赖、systemctl 使用 fixture，UID 切换与 root 参数重放实际执行。最初 `-red.log`的粗粒度断言也会匹配好 ID 对照，只作诊断保留，不用它替代精确坏 ID 红绿断言。
+
+修复后，同关联 Native 写操作经稳定入口重入：root 对照捕获的源码、配置、后端、install_id 与执行目录后再次核对部署；源码入口默认/显式同配置、邀请生成/SSH 修改及解析目标后的 join 保留此守卫。真正不同配置仍优先；只读动作支持选项在前，不自动 sudo；非 TTY 写操作没有 `--yes` 在 sudo 前停止。root 更新/清除的原子 JSON 保留原 owner，原用户仍可读取稳定入口。
+
+主仓原四审脚本精确绿测 `install-location-review5-native-identity-green-run.log` 实际退出 0：坏 ID 的直接/重入均为 1，好 ID 对照仍为 77。对应原始输出为 `install-location-review5-native-identity-green-final.log`；保留函数入口 hook，不执行 Native 安装函数体。
+
+写者精确 join 红测 `cpa-location-review5-fixed-join-precise-red.log` 报告退出 1：默认/同目标坏 ID 均触达 root join hook 79，无确认也进入 sudo。早期 `-fixed-join-red.log` 未继承函数 DEBUG，只证明未确认提权，不作为身份红证据。`-native-boundaries-red.log` 报告退出 1，覆盖七项非 TTY 未确认写动作、选项在动作前的只读/menu 分类与源码清除收据 owner；随后全量 location 的好坏 ID、不同目标、上下文替换、purge/旧源码与顺序对照通过。以上 `/tmp` 日志为隔离写者报告，主仓最终结果独立列于下表。
+
+四审之前的 review4 成功日志仅绑定其原执行树，不能充当此项重入身份修复后的最终验证。
+
+### 清除收据与现存记录的追加负例
+
+隔离写者的 `cpa-location-review5-live-purged-identity-probe.log` 实际报告退出 1：配置仍有真实 Native 记录，入口 ID 改坏并标 `status=purged` 后，root 重入触达安装 hook 77。主仓 `install-location-review5-live-purged-red.log` 同样输出 RC77，但初次调用没有完整保留 tool metadata，仅列 stdout 诊断，不冒称主仓实际退出码。持久化新回归的窄红 `cpa-location-review6-live-purged-red.log` 实际报告退出 1；新缺失分类覆盖两种 JSON、旧 `.env`、悬空链接、格式和不可读祖先，默认读取仅在真正缺记录时使用清除收据。
+
+最小缺失分类候选又由真实 `cpa_install_finish → cpa_location_register` 负例发现收尾兼容问题：先核验真实缺记录，写入新 ID，再登记时仍拿旧收据 ID 严查。`cpa-location-review6-purged-finish-red.log` 实际报告退出 1；最初 ROOT/load 顺序错误只作诊断，不算此红。修复保留默认严格写入口，登记内部先验新实际记录/清单，再限制同 source/config、同 ID 或清除收据；非清除异 ID 拒绝。不新增 token 或安装状态机。
+
+以下主仓 `review5` 实际结果均为清除收据追加修复前的历史验证，不冒充最后候选全量重跑：location/manager/after_install/invitation_form/start/dependencies、GitHub/安装邀请/join 预检/部署/host pin 两组与 75 文件静态均退出 0；公共真实 Docker/旧接管/Native 生命周期和 GitHub Native/Docker CGI/SSH/首备/换目录重放也退出 0。具体日志为 `install-location-review5-regression-location.log`、`-regression-targets.log`、`-runtime-final.log`；原始 tool 对象在 `install-location-review5-tool-results.json`，完整 75 执行文件及六个整合文件的旧 SHA 保留在本地 packet 的 `pre-live-purged-*`。核心/服务/邀请 unit/真实 default+custom SSH/CGI API/9 项页面的 `-core-api-protocol.log` 退出 0，其 16 个消费组件另存 SHA 并在后续验证中核对不变。
+
+
+### 最终清除收据修复后的复验
+
+最新主仓整合仅接回 `location.sh`、`integration/location.sh` 和 `e2e/github_entrypoint.sh` 三个冻结文件；前四个身份/入口文件不变。最终哈希见 `.runtime/install-location-review6-integrated.sha256` 和 `-all-exec.sha256`。以下结果均由主线程实际收取工具退出码，不替换成写者报告；原始完整工具对象在 `.runtime/install-location-review6-tool-results.json`。
+
+| 最终本地日志 | 实际结果与范围 |
+|---|---|
+| `.runtime/install-location-review6-regression-targets.log` | 退出 0；github_install/manager/after_install/invitation_form/start/invitation_installer/join_preflight/deployment/invitation_host_pins、dependencies；全部 75 文件 Bash 语法、原 warning 级 ShellCheck、完整执行文件/整合文件/16消费组件 SHA、diff 通过 |
+| `.runtime/install-location-review6-exact-identity.log` | 退出 0；原四审坏 ID 直接/重入都精确为 1，好 ID 对照精确为 77；live-purged 的 root 拒绝精确为 1，没有执行安装函数体 |
+| `.runtime/install-location-review6-focused-final.log` | 退出 0；真实 helper+finish 的 Docker/Native 清除后新 ID 登记、非清除异 ID 拒绝、live-purged 预检；固定/稳定源码、sudo期间清除标记替换、异常/未知记录与真缺失重装对照通过；完整75执行文件 SHA保持 |
+| `.runtime/install-location-review6-runtime-final.log` | 退出 0；公共 GitHub 真Docker 首装/稳定管理/普通卸载/清除后新 ID 重装、stable/source status、数据保留、旧隐藏接管和定点网络清理；Native完整生命周期；GitHub来源 Native/Docker 实际CGI/SSH配对/首备及换目录重放，运行前后完整75执行文件SHA一致 |
+
+隔离写者 `installer_impl` 的最终全量 location 实际退出 0，日志 `/tmp/cpa-location-review7-location-full-final.log`，SHA256 `64276e1d475745960276d92db1d21b2dd30a0818f274b6049a8945f9e80906c1`；完整身份/顺序/确认/固定源码邀请及 SSH/清除收据/旧源码 owner 对照均通过。主线程核对写者工具 JSON 与全部7文件冻结 SHA，与主仓接回文件一致；不将此项称为主仓直接执行的 full。写者同树公共 Docker/Native 也实际退出 0。完整实际对象见 `.runtime/install-location-review6-writer-tool-results.json`；历史 full 被受控终止143、旧候选0、ShellCheck 初始1及 ROOT/source-order 诊断均单列，不当作最终成功。
+
+最终文档/结构/9项页面 unit、全部执行文件 SHA 与 diff 复验在 `.runtime/install-location-review6-polish-final.log`；最后独立审查原样输出见 `reviews/review-install-location.md`，结论与冻结元数据以该文件为准，不作为正式 Athena 门禁凭证。
+
+核心/服务/API/旧SSH来源的历史结果保持原范围：16个消费组件已在最新主仓逐一核对 SHA 不变，不将历史整组日志改称最终树重跑。页面9单测、本地链接/结构和最终diff另在本轮文档收尾后复验。运行期间未编辑正在执行的源码或测试，未提交/推送。
+
+有界 polish：无生产 debug hook/重试或第二套状态机；缺失分类与登记的内部读取契约有注释；复用原安装/邀请/生命周期；只检查已知目标及祖先、不扫描全盘；源码、状态、业务路径保持分离。架构和排错已同步实际边界，没有追加功能。
+
+
+
+Docker Engine 26.1.5、Compose 2.26.1 实跑；HTTPS 传输使用本地 fixture，CGI、SSH、首备及 Docker 客户端/容器为实际执行。Native 的 systemctl、sudo 和发行版包管理策略为隔离模拟，真实宿主 systemd/软件源/网络策略仍待目标环境验证。本次只用临时目录、独立容器/网络，自动清理；未改真实 CPA、Cloudflare、账户或宿主服务。
+
+当前修改未推送 GitHub；远端 main 的 curl 安装入口尚未获得这次更新。首次安装指定 `CPA_GITHUB_REF` 时，所选版本须包含新版 `github.sh` 与 `location.sh`；辅助文件缺失明确报错，不回退 main。旧隐藏安装通过新版引导器登记原源码入口，保持原数据/身份。

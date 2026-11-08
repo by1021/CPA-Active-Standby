@@ -75,7 +75,8 @@ CURL
   chmod +x /usr/local/bin/curl
 fi
 # Prove installation does not reuse the image's included service source.
-cd /
+mkdir -p /fixture/work /fixture/elsewhere
+cd /fixture/work
 rm -rf -- /opt/cpa-dr
 [[ ! -e /opt/cpa-dr && ! -e /opt/cpa-dr-native ]]
 bash /fixture/test/command.sh > /tmp/first-install.out 2>&1 || { tail -35 /tmp/first-install.out >&2; exit 1; }
@@ -89,12 +90,17 @@ jq -e --arg snapshot "$snapshot" '.completion_acknowledged==true and .snapshot_i
 identity=$(sha256sum "$MOCK_STATE/admin.token" "$MOCK_STATE/ssh/id_ed25519" "$MOCK_STATE/ssh/ssh_host_ed25519_key")
 node=$(jq -r .node_id <<< "$status")
 source_dir=$(jq -r .source_root "$MOCK_CFG/.env.native.json")
-[[ $source_dir == /root/.local/share/cpa-dr/sources/*/cpa-dr && -f $source_dir/start.sh ]]
+[[ $source_dir == /fixture/work/cpa-dr/releases/*/cpa-dr && -f $source_dir/start.sh ]]
+[[ -f /fixture/work/start.sh && -f /fixture/work/cpa-dr/install.json ]]
 curl -fsS http://127.0.0.1:8787/healthz | jq -e .ok >/dev/null
 printf 'PASS: no-source pinned bootstrap, actual native installer/CGI/SSH, automatic pairing and verified first backup\n'
 # Original invitation now has a revoked temporary key. Re-executing exactly the
 # same generated command must resume from durable source and permanent identity.
+before_restart=$(grep -Ec '^(start|stop|restart|enable|disable|daemon-reload)( |$)' "$MOCK_SYSTEMCTL_LOG")
+cd /fixture/elsewhere
 bash /fixture/test/command.sh > /tmp/repeat-install.out 2>&1 || { tail -35 /tmp/repeat-install.out >&2; exit 1; }
+[[ $(grep -Ec '^(start|stop|restart|enable|disable|daemon-reload)( |$)' "$MOCK_SYSTEMCTL_LOG") == "$before_restart" ]]
+[[ ! -e /fixture/elsewhere/cpa-dr ]]
 [[ $(sha256sum "$MOCK_STATE/admin.token" "$MOCK_STATE/ssh/id_ed25519" "$MOCK_STATE/ssh/ssh_host_ed25519_key") == "$identity" ]]
 [[ $("${cli[@]}" status | jq -r .node_id) == "$node" ]]
 jq -e --arg snapshot "$snapshot" '.status=="completed" and .snapshot_id==$snapshot and .completion_acknowledged==true' "$MOCK_STATE/enrollment/join.json" >/dev/null

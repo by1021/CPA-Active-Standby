@@ -3,8 +3,86 @@
 # shellcheck source-path=SCRIPTDIR
 # shellcheck disable=SC2154,SC2016,SC2030,SC2031
 
+cpa_manager_find_association() {
+  local candidate directory='' associated record_source base cursor
+  manager_association_reason=''
+  if [[ $ROOT == */releases/*/cpa-dr ]]; then
+    directory=${ROOT%/releases/*}
+    if [[ -e $directory/install.json || -L $directory/install.json ]]; then
+      associated=$(cpa_location_read "$directory" 1) || fail '项目入口关联异常，请核对 install.json'
+      candidate=$(jq -r .config_dir "$associated")
+      # A genuinely different explicit target owns selection. Same-target source
+      # entrypoints must retain association identity, including after sudo.
+      if [[ -n $output && $(realpath -ms -- "$output") != "$(realpath -ms -- "$candidate")" ]]; then return 0; fi
+      cpa_location_read "$directory" >/dev/null || fail '项目入口关联异常，请核对 install.json'
+      [[ $(jq -r .source_root "$associated") == "$ROOT" ]] || fail '源码版本与项目入口关联不符'
+      if ((EUID != 0)) && [[ $(jq -r .deployment "$associated") == native ]]; then
+        case $action in
+          status|doctor|logs) ;;
+          *)
+            cpa_location_trusted "$directory/start.sh" && grep -qx '# cpa-dr stable project launcher v1' "$directory/start.sh" || fail '项目稳定入口异常'
+            exec bash "$directory/start.sh" "${original_args[@]}";;
+        esac
+      fi
+      output=$candidate; return 0
+    fi
+  fi
+  [[ -z $output ]] || return 0
+  if [[ -e $ROOT/.env || -L $ROOT/.env || -e $ROOT/.env.docker.json || -L $ROOT/.env.docker.json || -e $ROOT/.env.native.json || -L $ROOT/.env.native.json ]]; then
+    # Explicit native keeps the original /etc target unless this source itself
+    # owns a native record. An unrelated Docker record must not override it.
+    if [[ $deployment == native && ! -e $ROOT/.env.native.json && ! -L $ROOT/.env.native.json ]]; then return 0; fi
+    # Keep the original same-source Docker/native ambiguity, including explicit
+    # backend selection. Unrelated old records never outrank a source-owned one.
+    if [[ -f $ROOT/.env && ! -L $ROOT/.env && ! -e $ROOT/.env.docker.json && ! -L $ROOT/.env.docker.json &&
+      ( -e /etc/cpa-dr-native/.env.native.json || -L /etc/cpa-dr-native/.env.native.json ) ]]; then return 0; fi
+    if [[ -e $ROOT/.env.docker.json && -e /etc/cpa-dr-native/.env.native.json ]] &&
+      cpa_location_deployment "$ROOT" "$ROOT" >/dev/null 2>&1 &&
+      cpa_location_deployment /etc/cpa-dr-native "$ROOT" >/dev/null 2>&1; then return 0; fi
+    output=$ROOT; return 0
+  fi
+  # Only immediate, known configuration records for THIS source, never scan disks.
+  local -a found=()
+  base="$HOME/.local/share/cpa-dr/deployments"
+  cpa_location_path "$base" || fail "已知部署路径含链接，状态未知：$base"
+  cursor=$base
+  while :; do
+    if [[ -d $cursor && ! -x $cursor ]]; then
+      case ${action:-} in
+        status|doctor|menu)
+          manager_association_reason="已知部署路径祖先目录权限不足，状态未知：$cursor（$base）"
+          return 0;;
+        *) fail "已知部署路径祖先目录权限不足，状态未知：$cursor（$base）";;
+      esac
+    fi
+    [[ $cursor != / ]] || break
+    cursor=${cursor%/*}; cursor=${cursor:-/}
+  done
+  if [[ -e $base || -L $base ]]; then
+    cpa_location_path "$base" && [[ -d $base && -r $base && -x $base ]] || fail "已知部署路径含链接或目录权限不足，状态未知：$base"
+    for directory in "$base/"*; do
+      [[ -d $directory || -L $directory ]] || continue
+      [[ ! -L $directory && -r $directory && -x $directory ]] || fail "已知部署目录含链接或权限不足，状态未知：$directory"
+      for candidate in "$directory/.env.docker.json" "$directory/.env.native.json"; do
+        [[ -e $candidate || -L $candidate ]] || continue
+        command -v jq >/dev/null || fail '已知部署待核验：缺少 jq，状态未知'
+        cpa_location_trusted "$candidate" || fail "已知部署记录含链接、权限不足或归属异常：$candidate"
+        record_source=$(jq -er '.source_root|select(type=="string" and startswith("/") and length>1)' "$candidate" 2>/dev/null) || fail "已知部署记录异常：$candidate"
+        [[ $record_source == "$ROOT" ]] || continue
+        associated=${candidate%/*}
+        cpa_location_deployment "$associated" "$ROOT" >/dev/null || fail "已知部署记录异常：$candidate"
+        [[ -z $deployment || $candidate == */.env.$deployment.json ]] || continue
+        found+=("$associated")
+      done
+    done
+  fi
+  if ((${#found[@]} > 1)); then fail '当前源码关联多份部署，请指定 --output'; fi
+  ((${#found[@]} == 0)) || output=${found[0]}
+  return 0
+}
 cpa_manager_select() {
   local answer native_candidate=0 docker_candidate=0
+  cpa_manager_find_association
   if [[ -z $output ]]; then
     if [[ -e /etc/cpa-dr-native/.env.native.json || -L /etc/cpa-dr-native/.env.native.json || ( -d /etc/cpa-dr-native && ! -x /etc/cpa-dr-native ) ]]; then native_candidate=1; fi
     if [[ -e $ROOT/.env || -e $ROOT/.env.docker.json || -L $ROOT/.env ]]; then docker_candidate=1; fi
@@ -18,6 +96,7 @@ cpa_manager_select() {
         case $answer in 1) output=/etc/cpa-dr-native; manager_target_fixed=1; break;; 2) output=$ROOT; manager_target_fixed=1; break;; 0) exit 0;; *) printf '请输入 0、1 或 2。\n';; esac
       done
     elif ((native_candidate)); then output=/etc/cpa-dr-native
+    elif [[ -n ${manager_association_reason:-} ]]; then output="$HOME/.local/share/cpa-dr/deployments"
     else output=$ROOT; fi
   fi
   command -v realpath >/dev/null || return 0
@@ -35,6 +114,9 @@ cpa_manager_snapshot() {
   state=''; native_root=''; manager_ssh_address=''
   if ! command -v jq >/dev/null || ! command -v realpath >/dev/null || ! command -v timeout >/dev/null; then
     manager_install='状态未知'; manager_service='未知'; manager_reason='缺少 jq/realpath/timeout；仅显示菜单，不安装依赖'; return 0
+  fi
+  if [[ -n ${manager_association_reason:-} ]]; then
+    manager_install='状态未知'; manager_service='未知'; manager_reason=$manager_association_reason; return 0
   fi
   if ! (cpa_start_no_links "$output") 2>/dev/null; then
     manager_install='记录异常'; manager_service='未知'; manager_reason='目标路径含符号链接'; return 0
@@ -180,6 +262,9 @@ cpa_manager_show() {
     case $(jq -r '.enabled' <<< "$manager_runtime") in true) enabled_text=已启用;; false) enabled_text=未启用;; esac
   fi
   printf '\n安装状态：%s\n配置目录：%s\n部署方式：%s\n服务状态：%s\n本机角色：%s\n自动备份：%s\n管理页面：%s\n管理 API：%s\n专用 SSH：%s\n' "$manager_install" "$output" "${manager_backend:-尚未选择}" "$manager_service" "$role_text" "$enabled_text" "$manager_web" "$manager_api" "$manager_ssh"
+  if [[ -n $record ]]; then
+    printf '源码目录：%s\n状态目录：%s\n' "$(jq -r .source_root <<< "$record")" "$state"
+  fi
   [[ -z $manager_reason ]] || printf '说明：%s\n' "$manager_reason"
   if [[ -n $manager_runtime ]]; then
     # Whitelist: no config blob, tokens, private keys or free-form job payloads.

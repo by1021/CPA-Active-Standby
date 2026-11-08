@@ -12,7 +12,7 @@ data='' output='' output_given=0 port='' ssh_port='' role='' deployment='' bind=
 ssh_bind='' invite_file='' invite_payload='' primary_host='' primary_port='' backup_host='' backup_port=''
 backup_data='' backup_deployment='' backup_output='' backup_bind='' invite_ttl=1800 invite_auto=1
 state_arg='' root_arg='' read_only=0 install_deps=1 assume_yes=0 uninstall=0 purge=0
-existing=0 wizard=0 record='' manifest='' lock_file=''
+existing=0 wizard=0 record='' manifest='' lock_file='' generate_backup=0
 source_specs=() source_names=() source_kinds=() source_paths=()
 usage() {
   local line
@@ -20,6 +20,7 @@ usage() {
 用法：bash start.sh                         # 中文管理菜单（终端）
       bash start.sh menu [--output DIR] [--deployment native|docker]
       bash start.sh install [安装参数 ...]
+                    [--generate-backup --primary-host HOST --backup-host HOST ...]
       bash start.sh generate-backup-command [--primary-host HOST --backup-host HOST]
                     [--backup-data-dir TARGET --backup-deployment native|docker]
                     [--backup-output DIR --backup-bind-host HOST --ttl 1800 --yes]
@@ -161,6 +162,7 @@ while (($#)); do
         --backup-output) backup_output=$2;; --backup-bind-host) backup_bind=$2;; --ttl) invite_ttl=$2;;
       esac; shift 2;;
     --read-only-data) read_only=1; shift;;
+    --generate-backup) generate_backup=1; shift;;
     --yes) assume_yes=1; shift;;
     --no-auto-enable) invite_auto=0; shift;;
     --no-install-deps) install_deps=0; shift;;
@@ -199,6 +201,8 @@ fi
 source "$ROOT/scripts/start-dependencies.sh"
 # shellcheck source=scripts/install/start-lifecycle.sh
 source "$ROOT/scripts/start-lifecycle.sh"
+# shellcheck source=scripts/packaging/location.sh
+source "$ROOT/scripts/packaging/location.sh"
 # shellcheck source=scripts/install/start-manager.sh
 source "$ROOT/scripts/start-manager.sh"
 # shellcheck source=scripts/install/invitation.sh
@@ -208,7 +212,13 @@ case $action in
   generate-backup-command) cpa_generate_invitation; exit 0;;
   configure-ssh) cpa_configure_ssh; exit 0;;
 esac
-[[ -z $invite_file && -z $invite_payload && -z $primary_host && -z $primary_port && -z $backup_host && -z $backup_port && -z $backup_data && -z $backup_deployment && -z $backup_output && -z $backup_bind && $invite_ttl == 1800 && $invite_auto == 1 ]] || fail '邀请参数仅用于 join 或 generate-backup-command'
+if ((generate_backup)); then
+  [[ $action == install && -z $invite_file && -z $invite_payload ]] || fail '--generate-backup 仅用于主机安装'
+  [[ -z $role || $role == primary ]] || fail '--generate-backup 仅用于主机，未执行安装'
+  [[ -t 0 || ( -n $primary_host && -n $backup_host && $assume_yes == 1 ) ]] || fail '非交互生成需 --primary-host、--backup-host 和 --yes'
+else
+  [[ -z $invite_file && -z $invite_payload && -z $primary_host && -z $primary_port && -z $backup_host && -z $backup_port && -z $backup_data && -z $backup_deployment && -z $backup_output && -z $backup_bind && $invite_ttl == 1800 && $invite_auto == 1 ]] || fail '邀请参数仅用于 join、generate-backup-command 或 install --generate-backup'
+fi
 if [[ $action != install && $action != uninstall ]]; then
   [[ -z $role && -z $data && -z $port && -z $ssh_port && -z $bind && -z $ssh_bind && -z $state_arg && -z $root_arg && $read_only == 0 && ${#source_specs[@]} == 0 ]] || fail '管理操作仅接受目标目录/方式及对应确认或日志选项'
   [[ $action != menu || ( $assume_yes == 0 && $install_deps == 1 ) ]] || fail 'menu 不接受自动确认或依赖安装选项'
@@ -217,6 +227,7 @@ if [[ $action != install && $action != uninstall ]]; then
 fi
 
 # Filenames identify the backend even when jq/coreutils have not been installed yet.
+cpa_manager_find_association
 if [[ -z $output ]]; then
   if [[ $deployment == native ]]; then output=/etc/cpa-dr-native
   elif [[ $deployment == docker ]]; then output=$ROOT
@@ -234,6 +245,7 @@ fi
 if [[ -n $detected ]]; then
   [[ -z $deployment || $deployment == "$detected" ]] || fail '部署方式与已有安装冲突；保留原部署'
   deployment=$detected; existing=1
+  if ((generate_backup)); then cpa_generate_invitation; exit 0; fi
 elif ((uninstall)); then fail '未找到安装记录，请核对 --output DIR'
 else
   if [[ -t 0 && ( -z $role || -z $data || ${#source_specs[@]} == 0 || -z $deployment ) ]]; then wizard=1; fi
@@ -396,5 +408,5 @@ address=$("${compose[@]}" port cpa-dr 8787) || fail '读取实际管理端口失
 [[ -n $address ]] || fail '未找到管理端口映射'
 printf '\n服务已启动（仅管理服务健康，不代表 CPA 业务就绪）。\n部署方式：Docker\n管理地址：http://%s\n配置文件：%s\n管理员令牌：%s\n本机 SSH 公钥：\n' "$address" "$envfile" "$token"
 cat -- "$state/ssh/id_ed25519.pub"
-printf '%s\n' '已保留/初始化角色与数据设置；新安装备份未启用。交换公钥并核对指纹后在页面启用。'
-printf '%s\n' '主机可运行 bash start.sh generate-backup-command 生成备机安装邀请。'
+printf '%s\n' '已保留/初始化角色与数据设置；新安装定时备份未启用。使用一键邀请自动配对；手工配对才需要交换公钥。'
+cpa_install_finish

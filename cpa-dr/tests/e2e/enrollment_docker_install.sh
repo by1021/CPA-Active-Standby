@@ -78,7 +78,8 @@ if [[ ${CPA_TEST_GITHUB:-0} == 1 ]]; then jq -e --arg commit "$commit" '.invite.
 jq -r .command "$TMP/result.json" > "$TMP/command.sh"
 chmod 600 "$TMP/command.sh" "$TMP/result.json"
 # Run the exact generated command from an empty private HOME: no source mount.
-HOME="$TMP/home" bash "$TMP/command.sh" > "$TMP/install.out" 2>&1
+mkdir -p "$TMP/work" "$TMP/elsewhere"
+(cd "$TMP/work"; HOME="$TMP/home" bash "$TMP/command.sh") > "$TMP/install.out" 2>&1
 project=$(jq -r .project_name "$TMP/backup/.env.docker.json")
 backup=$(docker ps -q --filter "label=com.docker.compose.project=$project")
 [[ -n $backup ]]
@@ -89,8 +90,11 @@ jq -e --arg snapshot "$snapshot" '.completion_acknowledged==true and .snapshot_i
 [[ ! -e $TMP/data/auths/original.json ]]
 identity=$(sha256sum "$TMP/backup/state-native/admin.token" "$TMP/backup/state-native/ssh/id_ed25519" "$TMP/backup/state-native/ssh/ssh_host_ed25519_key")
 source_dir=$(jq -r .source_root "$TMP/backup/.env.docker.json")
-[[ $source_dir == "$TMP/home/.local/share/cpa-dr/sources/"*"/cpa-dr" && -f $source_dir/deploy/Dockerfile && -f $source_dir/.dockerignore ]]
-HOME="$TMP/home" bash "$TMP/command.sh" > "$TMP/repeat.out" 2>&1
+[[ $source_dir == "$TMP/work/cpa-dr/releases/"*"/cpa-dr" && -f $source_dir/deploy/Dockerfile && -f $source_dir/.dockerignore ]]
+[[ -f $TMP/work/start.sh && -f $TMP/work/cpa-dr/install.json ]]
+(cd "$TMP/elsewhere"; HOME="$TMP/home" bash "$TMP/command.sh") > "$TMP/repeat.out" 2>&1
+[[ $(docker ps -q --filter "label=com.docker.compose.project=$project") == "$backup" ]]
+[[ ! -e $TMP/elsewhere/cpa-dr ]]
 [[ $(sha256sum "$TMP/backup/state-native/admin.token" "$TMP/backup/state-native/ssh/id_ed25519" "$TMP/backup/state-native/ssh/ssh_host_ed25519_key") == "$identity" ]]
 jq -e --arg snapshot "$snapshot" '.status=="completed" and .snapshot_id==$snapshot and .completion_acknowledged==true' "$TMP/backup/state-native/enrollment/join.json" >/dev/null
 printf 'PASS: no-source Docker client bootstrap, container pairing/first backup, durable source and exact-command identity-preserving replay\n'

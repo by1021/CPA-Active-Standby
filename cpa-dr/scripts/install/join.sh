@@ -207,6 +207,12 @@ cpa_join_main() {
   cpa_paths_intersect "$data" "$output" && fail '备机数据与部署目录须独立'
   cpa_paths_intersect "$data" "$ROOT" && fail '备机数据与源码目录须独立'
   if [[ $deployment == native && $EUID != 0 ]]; then
+    [[ -t 0 || $assume_yes == 1 ]] || fail '非交互加入需 --yes，未提权'
+  fi
+  # Invite output is resolved first: different targets retain their priority,
+  # while this fixed release's own target keeps its stable identity across sudo.
+  if [[ $ROOT == */releases/*/cpa-dr ]]; then cpa_manager_find_association; fi
+  if [[ $deployment == native && $EUID != 0 ]]; then
     command -v sudo >/dev/null || fail 'Linux 本地安装需要 root/sudo'
     local -a elevated=(join --invite-file "$file" --output "$output")
     ((assume_yes == 0)) || elevated+=(--yes)

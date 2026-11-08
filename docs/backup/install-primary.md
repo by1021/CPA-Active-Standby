@@ -14,7 +14,11 @@ CPA 已有数据父目录与源码、备份状态、配置目录相互独立。�
 curl -fsSL https://raw.githubusercontent.com/by1021/CPA-Active-Standby/main/install.sh -o install-cpa-dr.sh && bash install-cpa-dr.sh
 ```
 
-入口默认主机角色，将 GitHub 版本固定为完整提交 SHA，再获取服务源码和配置模板。GitHub 安装默认配置目录为 `$HOME/.local/share/cpa-dr/deployments/primary`，源码位于 `$HOME/.local/share/cpa-dr/github/<提交SHA>/cpa-dr`。以安装输出为准，后续操作进入该源码目录并指定相同 `--output`。
+入口默认主机角色，首次将 GitHub 版本固定为完整提交 SHA，再获取服务源码和配置模板。项目位于安装命令的执行目录下 `cpa-dr/`，新主机配置在 `cpa-dr/config`，源码在 `cpa-dr/releases/<提交SHA>/cpa-dr`。在 `/root` 执行时项目就是 `/root/cpa-dr`。安装记录关联真实部署，日常不需要进入 SHA 目录或重复填写 `--output`。
+
+指定 `CPA_GITHUB_REF` 首次安装时，所选提交须包含新版 `github.sh` 和 `location.sh`；辅助文件缺失会明确报错，不回退到 main。已有旧隐藏部署可通过新版引导器关联原源码，无需升级。
+
+安装执行目录留下 `start.sh` 快捷入口，项目目录也有稳定 `start.sh`。已有无关同名文件保留；这时使用安装输出的完整项目入口。`--install-dir TARGET` 指定项目位置，`--output TARGET` 只指定配置位置，二者独立。
 
 已有本地源码也可在项目根目录执行 `bash start.sh`，沿用其原有默认目录。
 
@@ -26,6 +30,8 @@ curl -fsSL https://raw.githubusercontent.com/by1021/CPA-Active-Standby/main/inst
 | Linux 本地 | 使用 systemd、Nginx、fcgiwrap、OpenSSH 等，普通用户经 sudo |
 | 新安装 | 定时任务停用，不启停 CPA、不自动恢复业务数据 |
 
+首次主机交互安装成功后，直接询问「现在生成备机安装命令？[Y/n]」。继续填写主备地址、专用 SSH 端口、备机数据目录和部署方式，核对计划后生成；取消不影响主机安装。专用 SSH 如果仅监听回环，须确认调整到本机可绑定且对端可达地址；不修改管理监听和防火墙。
+
 非交互示例，`TARGET` 为实际数据父目录，`HOST` 为本机供备机连接的专用 SSH 监听地址：
 
 ```bash
@@ -34,6 +40,8 @@ bash install-cpa-dr.sh --deployment docker --data-dir TARGET \
 ```
 
 按实际数据增减 `--source 标签:directory|file|sqlite:路径`；Linux 本地改为 `--deployment native`。`--yes` 明确确认安装和所需依赖，`--no-install-deps` 只检查，二者不同时使用。管理 `--bind-host` 与专用 `--ssh-bind-host` 分开设置。
+
+非交互需要同轮生成备机命令时额外提供 `--generate-backup`、`--primary-host HOST`、`--backup-host HOST` 及备机参数；不指定则只安装，不等待输入。必要参数缺失先报错。
 
 ## 管理与核对
 
@@ -48,16 +56,19 @@ ssh -N -L 8787:127.0.0.1:8787 HOST
 专用 SSH 监听双方可达地址，防火墙仅允许对端来源。已有部署改监听用受控入口，核对原配置目录和新监听地址：
 
 ```bash
-bash start.sh configure-ssh --ssh-bind-host HOST --output TARGET
+bash start.sh configure-ssh --ssh-bind-host HOST
 ```
 
 Docker 受任务锁保护停止、更新监听并重新就绪；Linux 本地更新服务源码与专用 SSH 配置并维护归属摘要，保留身份/状态。不要直接修改所有权标记或单元摘要。`/healthz` 只证明管理服务，不代表 CPA 业务正常。
 
-然后进入[备机安装](install-standby.md)。自定义首次 `--output` 后，后续操作一直选择相同目录：
+然后按[备机安装](install-standby.md)执行主机生成的完整命令。在安装执行目录或项目目录日常操作：
 
 ```bash
-bash start.sh status --output TARGET
-bash start.sh install --output TARGET
+bash start.sh
+bash start.sh status
+bash start.sh install
 ```
 
-已有安装重跑保留配置、身份和历史，不从其他空目录重新初始化。
+从其他目录使用安装输出的完整入口也能定位同一部署。稳定入口已关联自定义 `--output`；显式 `--output TARGET` 仍可选择另一个已知部署。
+
+重跑 GitHub 引导器默认接管原安装，不追踪 main、不重新下载或重建服务；需要恢复安装时用 `start.sh install`。兼容旧隐藏目录时仅验证记录并关联稳定入口，不搬数据、不变更令牌、公钥或 Compose 项目名。多份记录明确选择，不从空目录重新初始化。

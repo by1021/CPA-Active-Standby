@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Shared HTTPS source fetcher, also embedded into the standby invitation command.
+# The public loader fetches this helper from the same fixed commit.
+if [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]%/*}/location.sh ]]; then
+  # shellcheck source=location.sh
+  source "${BASH_SOURCE[0]%/*}/location.sh"
+fi
 cpa_github_fail() { printf 'GitHub 安装失败：%s\n' "$*" >&2; return 1; }
 cpa_github_identity() {
   [[ $1 == by1021/CPA-Active-Standby && $2 =~ ^[a-f0-9]{40}$ ]] || { cpa_github_fail '仓库或固定提交无效'; return 1; }
@@ -68,43 +73,112 @@ cpa_github_bundle() (
 cpa_github_main() (
   set -Eeuo pipefail
   umask 077
+  local cwd
+  cwd=$(pwd -P) || return 1
   local repository=${1:?repository required} commit=${2:?commit required}
   shift 2
   cpa_github_identity "$repository" "$commit" || return 1
-  local yes=0 no_install=0 argument
-  for argument in "$@"; do
-    case $argument in --yes) yes=1;; --no-install-deps) no_install=1;; esac
+  local yes=0 no_install=0 project="$cwd/cpa-dr" config='' argument mode='' source_dir temp version generate=0
+  local -a forwarded=()
+  while (($#)); do
+    case $1 in
+      --install-dir) [[ $# -ge 2 && -n $2 ]] || { cpa_github_fail '--install-dir 缺少值'; return 1; }; project=$2; shift 2;;
+      --output) [[ $# -ge 2 && -n $2 ]] || return 1; config=$2; forwarded+=("$1" "$2"); shift 2;;
+      --deployment) [[ $# -ge 2 && -n $2 ]] || return 1; mode=$2; forwarded+=("$1" "$2"); shift 2;;
+      --yes) yes=1; forwarded+=("$1"); shift;;
+      --no-install-deps) no_install=1; forwarded+=("$1"); shift;;
+      --generate-backup) generate=1; forwarded+=("$1"); shift;;
+      *) forwarded+=("$1"); shift;;
+    esac
+  done
+  [[ $project == /* ]] || project="$cwd/$project"
+  [[ -z $config || $config == /* ]] || config="$cwd/$config"
+  # Independently protect direct/embedded helper callers before dependency
+  # installation. Explicit config and a stable association outrank HOME scans.
+  local candidate cursor
+  local -a probe=("$project")
+  if [[ ! -e $project/install.json && ! -L $project/install.json ]]; then
+    if [[ -n $config ]]; then probe+=("$config")
+    else probe+=("$HOME/.local/share/cpa-dr/deployments/primary" /etc/cpa-dr-native); fi
+  fi
+  for candidate in "${probe[@]}"; do
+    cpa_location_path "$candidate" || { cpa_github_fail "候选路径含链接或异常，状态未知：$candidate"; return 1; }
+    cursor=$candidate
+    while :; do
+      if [[ -d $cursor && ! -x $cursor ]]; then
+        cpa_github_fail "已知部署路径祖先目录权限不足，状态未知：$cursor"; return 1
+      fi
+      [[ ! -e $cursor || -d $cursor ]] || { cpa_github_fail "已知部署路径不是目录，状态未知：$cursor"; return 1; }
+      [[ $cursor != / ]] || break
+      cursor=${cursor%/*}; cursor=${cursor:-/}
+    done
   done
   cpa_github_dependencies "$yes" "$no_install" || return 1
-  local base="$HOME/.local/share/cpa-dr" source_dir temp version output=0 item
-  # Reuse the proven archive/manifest and private-path checks from this commit.
+  project=$(realpath -m -- "$project")
+  [[ -z $config ]] || config=$(realpath -m -- "$config")
+  cpa_location_path "$project" || { cpa_github_fail '项目路径含链接或异常'; return 1; }
+  if [[ -e $project/install.json || -L $project/install.json ]]; then
+    cpa_location_launch "$project" --bootstrap-existing "${forwarded[@]}"
+    return
+  fi
+  local record old_source candidates=0
+  local -a found=()
+  if [[ -n $config ]]; then found=("$config")
+  else found=("$HOME/.local/share/cpa-dr/deployments/primary" /etc/cpa-dr-native); fi
+  for candidate in "${found[@]}"; do
+    if [[ -e $candidate/.env.docker.json || -L $candidate/.env.docker.json || -e $candidate/.env.native.json || -L $candidate/.env.native.json ]]; then
+      record=$(cpa_location_deployment "$candidate") || { cpa_github_fail "已有部署记录异常：$candidate"; return 1; }
+      [[ -z $mode || $(jq -r .deployment "$record") == "$mode" ]] || continue
+      old_source=$(jq -r .source_root "$record")
+      cpa_location_trusted "$old_source/start.sh" && cpa_location_manifest "$old_source" || { cpa_github_fail '已有源码校验失败'; return 1; }
+      ((candidates+=1)); config=$candidate; source_dir=$old_source
+    fi
+  done
+  ((candidates <= 1)) || { cpa_github_fail '检测到多份已有部署，请指定 --output'; return 1; }
+  if ((candidates)); then
+    cpa_location_register "$project" "$source_dir" "$config" "$cwd" || return 1
+    if ((generate)); then cpa_location_launch "$project" --bootstrap-existing "${forwarded[@]}"; return; fi
+    cpa_location_launch "$project" status
+    return
+  fi
+  if [[ -d $project && ! -f $project/.cpa-dr-project ]]; then
+    [[ -z $(find "$project" -mindepth 1 -maxdepth 1 -print -quit) ]] || { cpa_github_fail '项目目录已有其他文件，未覆盖'; return 1; }
+  fi
+  cpa_location_project_file "$project/.cpa-dr-project" && cpa_location_project_file "$project/.install.lock" || return 1
+  mkdir -p "$project/releases"; chmod 700 "$project"
+  cpa_location_project_marker "$project" || return 1
+  exec {github_lock}>>"$project/.install.lock"
+  flock -n "$github_lock" || { cpa_github_fail '该项目安装正在执行'; return 1; }
   temp=$(mktemp -d)
   trap 'rm -rf -- "$temp"' EXIT
   cpa_github_bundle "$repository" "$commit" "$temp/bundle.tar" > "$temp/metadata.json"
   mkdir "$temp/check"
   tar --no-same-owner -xf "$temp/bundle.tar" -C "$temp/check"
+  # shellcheck source=bootstrap.sh
   source "$temp/check/cpa-dr/scripts/packaging/bootstrap.sh"
   version=$(jq -r .version "$temp/metadata.json")
   cpa_bootstrap_check_archive "$temp/bundle.tar" && cpa_bootstrap_manifest "$temp/check/cpa-dr" "$version" || return 1
-  cpa_bootstrap_private_path "$base" || { cpa_github_fail '本机源码路径异常'; return 1; }
-  mkdir -p "$base/github" "$base/deployments"
-  source_dir="$base/github/$commit"
-  cpa_bootstrap_private_path "$source_dir" || return 1
-  exec {github_lock}>"$base/github/$commit.lock"
-  flock -n "$github_lock" || { cpa_github_fail '同一版本安装正在执行'; return 1; }
+  source_dir="$project/releases/$commit"
+  cpa_location_path "$source_dir" || return 1
   if [[ -e $source_dir ]]; then
     cpa_bootstrap_manifest "$source_dir/cpa-dr" "$version" || { cpa_github_fail '持久源码校验失败，原配置与数据保留'; return 1; }
   else
     local stage
-    stage=$(mktemp -d "$base/github/.stage.XXXXXXXX")
+    stage=$(mktemp -d "$project/releases/.stage.XXXXXXXX")
     cp -a "$temp/check/cpa-dr" "$stage/"
     mv -T "$stage" "$source_dir"
   fi
-  for item in "$@"; do [[ $item != --output ]] || output=1; done
-  local -a args=(install --role primary)
-  ((output)) || args+=(--output "$base/deployments/primary")
+  config=${config:-$project/config}
+  local -a args=(install --role primary --output "$config")
+  local skip=0
+  for argument in "${forwarded[@]}"; do
+    if ((skip)); then skip=0; continue; fi
+    if [[ $argument == --output ]]; then skip=1; continue; fi
+    args+=("$argument")
+  done
   printf 'GitHub 提交：\n%s\n持久源码：%s/cpa-dr\n' "$commit" "$source_dir"
-  # Long-lived native services must not retain the installer lock descriptor.
-  (exec {github_lock}>&-; bash "$source_dir/cpa-dr/start.sh" "${args[@]}" "$@")
+  (exec {github_lock}>&-; bash "$source_dir/cpa-dr/start.sh" "${args[@]}")
+  if [[ -e $project/install.json ]]; then cpa_location_read "$project" >/dev/null; return; fi
+  cpa_location_register "$project" "$source_dir/cpa-dr" "$config" "$cwd"
 )
 if [[ ${BASH_SOURCE[0]:-} == "$0" ]]; then cpa_github_main "$@"; fi

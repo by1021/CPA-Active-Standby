@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Self-contained, dependency-bounded installer bootstrap; invitation JSON is data.
+if [[ -n ${BASH_SOURCE[0]:-} && -f ${BASH_SOURCE[0]%/*}/location.sh ]]; then
+  # shellcheck source=location.sh
+  source "${BASH_SOURCE[0]%/*}/location.sh"
+fi
 cpa_bootstrap_fail() { printf '安装引导失败：%s\n' "$*" >&2; return 1; }
 cpa_bootstrap_private_path() {
   local path=$1 cursor
@@ -52,6 +56,8 @@ cpa_bootstrap_dependencies() {
 cpa_bootstrap_main() {
   set -Eeuo pipefail
   umask 077
+  local cwd
+  cwd=$(pwd -P) || return 1
   [[ $# == 1 && $1 =~ ^[A-Za-z0-9+/=]+$ ]] || { cpa_bootstrap_fail '邀请编码异常'; return 1; }
   cpa_bootstrap_dependencies || return 1
   local base="$HOME/.local/share/cpa-dr" incoming id private source_dir invite_file host port key version expected scan output stage endpoint
@@ -73,6 +79,38 @@ cpa_bootstrap_main() {
   fi
   mv -fT "$incoming" "$invite_file"; chmod 600 "$invite_file"
   version=$(jq -r .bundle.version "$invite_file"); expected=$(jq -r .bundle.sha256 "$invite_file")
+  local project="$cwd/cpa-dr" config='' location="$private/location.json" release
+  release=$(jq -r '.bundle.source.commit//.bundle.version' "$invite_file")
+  [[ $release =~ ^[a-f0-9]{40}$ || $release =~ ^[a-f0-9]{64}$ ]] || { cpa_bootstrap_fail '固定版本格式异常'; return 1; }
+  if [[ -e $location || -L $location ]]; then
+    cpa_location_trusted "$location" || { cpa_bootstrap_fail '安装位置记录异常'; return 1; }
+    jq -e --arg id "$id" '.invite_id==$id and ([.project_dir,.source_dir,.config_dir]|all(type=="string" and startswith("/")))' "$location" >/dev/null || return 1
+    project=$(jq -r .project_dir "$location"); source_dir=$(jq -r .source_dir "$location"); config=$(jq -r .config_dir "$location")
+  elif [[ -d $source_dir ]]; then
+    config=$(jq -r '.backup.output//empty' "$invite_file")
+    if [[ -z $config ]]; then
+      [[ $(jq -r .backup.deployment "$invite_file") != native ]] || config=/etc/cpa-dr-native
+      config=${config:-$base/deployments/$id}
+    fi
+  else
+    cpa_location_path "$project" || return 1
+    if [[ -e $project/install.json || -L $project/install.json ]]; then
+      cpa_location_read "$project" >/dev/null || return 1
+      jq -e --arg id "$id" '.invite_id==$id' "$project/install.json" >/dev/null || { cpa_bootstrap_fail '当前目录项目已关联其他安装'; return 1; }
+    elif [[ -d $project && ! -f $project/.cpa-dr-project && -n $(find "$project" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
+      cpa_bootstrap_fail '当前项目目录已有其他文件，未覆盖'; return 1
+    fi
+    cpa_location_project_file "$project/.cpa-dr-project" || return 1
+    mkdir -p "$project/releases"; chmod 700 "$project"
+    cpa_location_project_marker "$project" || return 1
+    source_dir="$project/releases/$release"
+    config=$(jq -r '.backup.output//empty' "$invite_file")
+    if [[ -z $config ]]; then
+      [[ $(jq -r .backup.deployment "$invite_file") != native ]] || config=/etc/cpa-dr-native
+      config=${config:-$project/config}
+    fi
+  fi
+  cpa_location_path "$project" && cpa_location_path "$source_dir" && cpa_location_path "$config" || return 1
   # Completed invitations have revoked temporary credentials. Resume from the
   # durable verified source BEFORE attempting another temporary SSH connection.
   if [[ -d $source_dir ]]; then
@@ -100,20 +138,27 @@ cpa_bootstrap_main() {
     [[ $(stat -c %s "$private/bundle.tar") -le 209715200 ]] || return 1
     output=$(sha256sum "$private/bundle.tar"); [[ ${output:0:64} == "$expected" ]] || { cpa_bootstrap_fail '安装包摘要不符'; return 1; }
     cpa_bootstrap_check_archive "$private/bundle.tar" || return 1
-    stage=$(mktemp -d "$base/sources/.stage-$id.XXXXXXXX")
+    mkdir -p "${source_dir%/*}"
+    stage=$(mktemp -d "${source_dir%/*}/.stage-$id.XXXXXXXX")
     tar --no-same-owner -xf "$private/bundle.tar" -C "$stage" || { rm -rf -- "$stage"; return 1; }
     cpa_bootstrap_manifest "$stage/cpa-dr" "$version" || { rm -rf -- "$stage"; cpa_bootstrap_fail '安装包清单校验失败'; return 1; }
     printf '%s\n' "$id" > "$stage/.bootstrap-id"
     mv -T "$stage" "$source_dir"
     rm -f "$private/bundle.tar" "$private/key"
   fi
-  output=$(jq -r '.backup.output//empty' "$invite_file")
-  if [[ -z $output ]]; then
-    [[ $(jq -r .backup.deployment "$invite_file") != native ]] || output=/etc/cpa-dr-native
-    output=${output:-$base/deployments/$id}
-  fi
   # Keep the lock in this bootstrap only. Native service children must not
   # inherit it, or a finished installation prevents the next resumable run.
-  (exec {bootstrap_lock}>&-; bash "$source_dir/cpa-dr/start.sh" join --invite-file "$invite_file" --output "$output" --yes)
+  if [[ ! -e $location ]]; then
+    jq -n --arg id "$id" --arg project "$project" --arg source "$source_dir" --arg config "$config" '{invite_id:$id,project_dir:$project,source_dir:$source,config_dir:$config}' | cpa_location_write "$location" 600 || return 1
+  fi
+  (exec {bootstrap_lock}>&-; bash "$source_dir/cpa-dr/start.sh" join --invite-file "$invite_file" --output "$config" --yes)
+  if [[ -e $project/install.json ]]; then
+    cpa_location_read "$project" >/dev/null || return 1
+    if jq -e --arg id "$id" '.invite_id==$id' "$project/install.json" >/dev/null; then
+      printf '已有项目入口：bash %q menu；未改动入口或部署配置。\n' "$project/start.sh"
+      return 0
+    fi
+  fi
+  cpa_location_register "$project" "$source_dir/cpa-dr" "$config" "$cwd" "$id"
 }
 if [[ ${CPA_BOOTSTRAP_EMBEDDED:-0} == 1 || ${BASH_SOURCE[0]:-} == "$0" ]]; then cpa_bootstrap_main "$@"; fi

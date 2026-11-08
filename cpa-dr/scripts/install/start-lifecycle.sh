@@ -157,6 +157,18 @@ cpa_start_elevate_native() {
     [[ -z $state_arg ]] || args+=(--state-dir "$state_arg")
     [[ -z $root_arg ]] || args+=(--install-root "$root_arg")
     ((read_only == 0)) || args+=(--read-only-data)
+    ((generate_backup == 0)) || args+=(--generate-backup)
+    for spec in primary_host primary_port backup_host backup_port backup_data backup_deployment backup_output backup_bind; do
+      [[ -n ${!spec} ]] || continue
+      case $spec in
+        primary_host) args+=(--primary-host "$primary_host");; primary_port) args+=(--primary-port "$primary_port");;
+        backup_host) args+=(--backup-host "$backup_host");; backup_port) args+=(--backup-port "$backup_port");;
+        backup_data) args+=(--backup-data-dir "$backup_data");; backup_deployment) args+=(--backup-deployment "$backup_deployment");;
+        backup_output) args+=(--backup-output "$backup_output");; backup_bind) args+=(--backup-bind-host "$backup_bind");;
+      esac
+    done
+    args+=(--ttl "$invite_ttl")
+    ((invite_auto)) || args+=(--no-auto-enable)
   fi
   ((assume_yes == 0)) || args+=(--yes)
   ((install_deps == 1)) || args+=(--no-install-deps)
@@ -218,6 +230,7 @@ cpa_start_uninstall_docker() {
     cpa_start_owned_directory "$state" "$id"
     "${privilege[@]}" rm -rf --one-file-system -- "$state" || fail '清除专用状态失败，保留安装记录'
     rm -f -- "$envfile" "$manifest" || fail '清除部署配置失败'
+    cpa_location_mark_purged "$ROOT" "$output"
     printf '已卸载并清除Docker部署；原始数据和源码保留。\n'
   else printf '已卸载Docker部署；配置、密钥和备份保留，运行 start.sh install 可恢复。\n'; fi
 }
@@ -334,6 +347,7 @@ cpa_start_install_native() {
   cat -- "$state/admin.token"
   printf '本机 SSH 公钥：\n'; cat -- "$state/ssh/id_ed25519.pub"
   printf '%s\n' '已保留/初始化角色与数据设置；新安装备份未启用，双端配对后在页面启用。'
+  cpa_install_finish
 }
 cpa_start_uninstall_native() {
   [[ -n $record ]] || fail '缺少本地安装记录，请核对 --output'
@@ -365,6 +379,7 @@ cpa_start_uninstall_native() {
     rm -rf --one-file-system -- "$state" "$native_root" /run/cpa-dr-native || fail '清除本地专用目录失败，保留安装记录'
     for file in "${CPA_START_UNITS[@]}" nginx.conf sshd.conf .env.bootstrap.json; do rm -f -- "$output/$file"; done
     rm -f -- "$manifest"
+    cpa_location_mark_purged "$ROOT" "$output"
     printf '已卸载并清除Linux本地部署；原始数据、源码及未知配置文件保留。\n'
   else printf '已卸载Linux本地单元；代码、配置和备份保留，运行 start.sh install 可恢复。\n'; fi
 }
